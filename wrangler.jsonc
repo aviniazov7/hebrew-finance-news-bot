@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "hebrew-market-news-bot",
+  "name": "hebrew-finance-news-bot",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-21",
   "observability": {

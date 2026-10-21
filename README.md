@@ -1,4 +1,4 @@
-# Hebrew Market News Bot
+# Hebrew Finance News Bot
 
 A Cloudflare Worker that watches public finance RSS feeds and posts the stories that matter to a Telegram channel, in plain Hebrew. Each message has a short summary, one line on what it may mean for markets, a short list of what the news can affect, and a glossary for jargon such as “hedge fund”, “CPI”, or “rate cut”.
 

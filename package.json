@@ -1,5 +1,5 @@
 {
-  "name": "hebrew-market-news-bot",
+  "name": "hebrew-finance-news-bot",
   "version": "0.1.0",
   "private": true,
   "description": "Telegram channel bot that posts global finance news in simple Hebrew.",

@@ -1,5 +1,5 @@
 export const USER_AGENT =
-  "hebrew-market-news-bot/0.1 (+https://github.com/aviniazov7/hebrew-market-news-bot)";
+  "hebrew-finance-news-bot/0.1 (+https://github.com/aviniazov7/hebrew-finance-news-bot)";
 
 /** Newest RSS entries are at the top. Capping the body keeps free-plan CPU small. */
 export const BODY_CHAR_CAP = 40_000;
