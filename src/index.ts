@@ -9,7 +9,7 @@ export default {
       const config = parseConfig(env);
       return Response.json({
         ok: true,
-        service: "hebrew-market-news-bot",
+        service: "hebrew-finance-news-bot",
         dryRun: config.dryRun,
         importanceThreshold: config.importanceThreshold,
         categories: config.categories.length,
