@@ -1,0 +1,26 @@
+{
+  "name": "hebrew-market-news-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Telegram channel bot that posts global finance news in simple Hebrew.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "samples": "node --experimental-strip-types scripts/print-samples.ts",
+    "typecheck": "tsc --noEmit",
+    "cf-typegen": "wrangler types",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261021.1",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5",
+    "wrangler": "^4.151.3"
+  }
+}
