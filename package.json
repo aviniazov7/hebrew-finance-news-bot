@@ -15,11 +15,13 @@
     "typecheck": "tsc --noEmit",
     "cf-typegen": "wrangler types",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage --reporter=default --reporter=json --outputFile.json=coverage/vitest-report.json && node --experimental-strip-types scripts/write-badges.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261021.1",
     "@types/node": "^26.6.5",
+    "@vitest/coverage-v8": "^5.0.5",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5",
     "wrangler": "^4.151.3"

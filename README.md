@@ -1,5 +1,9 @@
 # Hebrew Finance News Bot
 
+[![CI](https://github.com/aviniazov7/hebrew-finance-news-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/aviniazov7/hebrew-finance-news-bot/actions/workflows/ci.yml)
+[![Tests](badges/tests.svg)](https://github.com/aviniazov7/hebrew-finance-news-bot/actions/workflows/ci.yml)
+[![Coverage](badges/coverage.svg)](https://github.com/aviniazov7/hebrew-finance-news-bot/actions/workflows/ci.yml)
+
 A Cloudflare Worker that watches public finance RSS feeds and sends the stories that matter to Telegram subscribers, in plain Hebrew. Anyone can open the bot and send `/start`. Each message has a short summary, one line on what it may mean for markets, a short list of what the news can affect, and a glossary for jargon such as “hedge fund”, “CPI”, or “rate cut”.
 
 It covers the whole market, not a crypto feed with a few other headlines mixed in: stocks, capital markets, bonds and yields, earnings, the Fed and other central banks, CPI and jobs, commodities, currencies (including the shekel), Israel, IPOs, mergers, regulation, housing, trade and tariffs, big tech, and banks.
@@ -190,14 +194,25 @@ You can also add the three secrets in the dashboard (Workers & Pages → the wor
 
 Secrets are declared in `wrangler.jsonc` under `secrets.required` and are not given values in git. `TELEGRAM_CHAT_ID` is a var, not a required secret.
 
-## Tests
+## Testing
 
 ```bash
 npm test
 npm run typecheck
+npm run test:coverage
 ```
 
-Vitest covers RSS and Atom parsing, KV dedupe, the Hebrew check, message formatting, category balance, subscribe and unsubscribe, broadcast pacing, 403 cleanup, and a dry-run of the pipeline with a fake model. GitHub Actions runs the same tests on Node 22.
+`npm test` runs Vitest. `npm run typecheck` is `tsc --noEmit`. `npm run test:coverage` repeats the suite with `@vitest/coverage-v8` and rewrites the tests and coverage badges above. The coverage badge is line coverage.
+
+The suite covers:
+
+- **Parsing.** RSS and Atom feeds, including CDATA, entities, dates, and Hebrew titles.
+- **Dedupe.** Seen ids in KV, the TTL, and a separate dry-run key so a rehearsal does not suppress a live story.
+- **Model fallback.** Gemini, then Gemini lite, then Workers AI. A draft that is not usable Hebrew is requested again from Gemini and, if that is still unusable, from Gemini lite. HTTP 429, a 5xx response, or a timeout on both Gemini calls is the only path to Workers AI. An auth failure stops the chain. Text that still fails the Hebrew check is not sent.
+- **Hebrew output validation.** The headline, summary, and market line must be Hebrew. Wording that tells the reader to buy, sell, or invest is dropped. An affects list keeps three to six Hebrew phrases.
+- **Subscriber commands.** `/start`, `/stop`, and `/help`, an unknown command, the webhook secret, and removal of a chat that blocks the bot.
+
+Every pull request runs the tests before merge. The [CI workflow](https://github.com/aviniazov7/hebrew-finance-news-bot/actions/workflows/ci.yml) also runs on each push to `main`: Node 22, `npm ci`, typecheck, `npm test`, then the coverage run. The job prints a coverage summary, and the badges have to match that run.
 
 `npm run samples` prints the fixture messages below.
 
