@@ -1,4 +1,5 @@
 import { DEFAULT_CATEGORIES, DEFAULT_FEEDS } from "./catalog.ts";
+import { DEFAULT_WORKERS_AI_MODEL } from "./workers-ai.ts";
 import { logError } from "./log.ts";
 import { safeHttpUrl } from "./text.ts";
 import type { Category, FeedSource } from "./types.ts";
@@ -15,6 +16,7 @@ export interface ConfigInput {
   DISCLAIMER?: string;
   GEMINI_MODEL?: string;
   GEMINI_FALLBACK_MODEL?: string;
+  WORKERS_AI_MODEL?: string;
   MAX_ITEMS_PER_RUN?: string;
   MAX_PER_CATEGORY?: string;
   MAX_ITEMS_PER_FEED?: string;
@@ -37,6 +39,7 @@ export interface AppConfig {
   disclaimer: string;
   geminiModel: string;
   geminiFallbackModel: string;
+  workersAiModel: string;
   maxItemsPerRun: number;
   maxPerCategory: number;
   maxItemsPerFeed: number;
@@ -70,6 +73,7 @@ export function parseConfig(input: ConfigInput): AppConfig {
     disclaimer: input.DISCLAIMER === undefined ? DEFAULT_DISCLAIMER : input.DISCLAIMER.trim(),
     geminiModel: input.GEMINI_MODEL?.trim() || DEFAULT_MODEL,
     geminiFallbackModel: input.GEMINI_FALLBACK_MODEL?.trim() || DEFAULT_FALLBACK_MODEL,
+    workersAiModel: input.WORKERS_AI_MODEL?.trim() || DEFAULT_WORKERS_AI_MODEL,
     maxItemsPerRun: parseBoundedInt(input.MAX_ITEMS_PER_RUN, 5, 1, 8),
     maxPerCategory: parseBoundedInt(input.MAX_PER_CATEGORY, 2, 1, 5),
     maxItemsPerFeed: parseBoundedInt(input.MAX_ITEMS_PER_FEED, 4, 1, 10),
