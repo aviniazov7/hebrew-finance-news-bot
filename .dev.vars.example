@@ -1,0 +1,4 @@
+# Copy to .dev.vars for `wrangler dev`. Never commit .dev.vars.
+GEMINI_API_KEY=
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHANNEL_ID=
