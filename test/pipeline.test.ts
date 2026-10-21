@@ -110,7 +110,7 @@ describe("runPipeline", () => {
       DRY_RUN: "false",
       GEMINI_API_KEY: "test-key",
       TELEGRAM_BOT_TOKEN: "TEST",
-      TELEGRAM_CHANNEL_ID: "@markets",
+      TELEGRAM_CHAT_ID: "101",
       FEEDS_PER_RUN: "0",
       MAX_PER_CATEGORY: "2",
       IMPORTANCE_THRESHOLD: "4",
@@ -131,6 +131,56 @@ describe("runPipeline", () => {
     expect(posted).toBeTruthy();
     expect(posted).toContain("📈 מניות ·");
     expect(posted).toContain("🎯 על מה זה משפיע: מדדי המניות, מניות שבבים, מניות הבנקים, אג״ח חברות, תיאבון הסיכון");
+    expect(posted).toContain("\"chat_id\":\"101\"");
     expect(posted).not.toContain("TEST");
+  });
+
+  it("sends to every subscriber and drops a chat that blocked the bot", async () => {
+    const kv = new MemoryKv();
+    await kv.put(
+      "subscribers:v1",
+      JSON.stringify({ "111": 1, "222": 1, "333": 1 }),
+    );
+    kv.writes = 0;
+    const chats: string[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (url.includes("api.telegram.org")) {
+        const body = typeof init?.body === "string" ? init.body : "";
+        const chatId = /"chat_id":"(\d+)"/.exec(body)?.[1] ?? "";
+        chats.push(chatId);
+        if (chatId === "222") {
+          return new Response(JSON.stringify({ ok: false, error_code: 403, description: "Forbidden: bot was blocked by the user" }), {
+            status: 403,
+          });
+        }
+        return new Response(JSON.stringify({ ok: true }));
+      }
+      return new Response(rss([{ title: "major event", id: "major", when: "Wed, 21 Oct 2026 15:00:00 GMT" }]));
+    };
+
+    const config = parseConfig({
+      FEEDS: JSON.stringify([{ name: "CNBC", url: "https://example.com/stocks.xml", category: "stocks" }]),
+      DRY_RUN: "false",
+      GEMINI_API_KEY: "test-key",
+      TELEGRAM_BOT_TOKEN: "TEST",
+      TELEGRAM_CHAT_ID: "333",
+      FEEDS_PER_RUN: "0",
+    });
+
+    const report = await runPipeline({
+      config,
+      kv,
+      fetchImpl,
+      now: () => NOW,
+      sleep: async () => {},
+      analyze: async (args) => hebrew(args.item.title),
+    });
+
+    expect(report.posted).toBe(1);
+    expect(report.blocked).toBe(1);
+    expect(chats).toEqual(["111", "222", "333"]);
+    const stored = JSON.parse((await kv.get("subscribers:v1")) ?? "{}") as Record<string, number>;
+    expect(Object.keys(stored).sort()).toEqual(["111", "333"]);
   });
 });

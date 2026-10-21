@@ -40,9 +40,10 @@
     "FEEDS": "",
     "EXTRA_FEEDS": "",
     "CATEGORIES": "",
-    "EXTRA_CATEGORIES": ""
+    "EXTRA_CATEGORIES": "",
+    "TELEGRAM_CHAT_ID": ""
   },
   "secrets": {
-    "required": ["GEMINI_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID"]
+    "required": ["GEMINI_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET"]
   }
 }

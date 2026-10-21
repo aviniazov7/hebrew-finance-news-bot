@@ -6,7 +6,8 @@ import { logError, logInfo } from "./log.ts";
 import { formatTelegramMessage } from "./format.ts";
 import { parseFeed } from "./rss.ts";
 import { pickFeedsForRun, resolvePostedCategory, selectForScoring } from "./scoring.ts";
-import { deliverMessage } from "./telegram.ts";
+import { broadcastTargets, loadSubscribers, saveSubscribers, type SubscriberMap } from "./subscribers.ts";
+import { broadcastMessage } from "./telegram.ts";
 import type { NewsItem } from "./types.ts";
 
 export interface RunReport {
@@ -21,6 +22,7 @@ export interface RunReport {
   rejected: number;
   errors: number;
   postedByCategory: Record<string, number>;
+  blocked: number;
 }
 
 export async function runPipeline(deps: {
@@ -29,6 +31,7 @@ export async function runPipeline(deps: {
   fetchImpl?: typeof fetch;
   now?: () => number;
   analyze?: typeof analyzeItem;
+  sleep?: (ms: number) => Promise<void>;
 }): Promise<RunReport> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const now = (deps.now ?? Date.now)();
@@ -41,7 +44,7 @@ export async function runPipeline(deps: {
     report.errors += 1;
     return report;
   }
-  if (!config.dryRun && (!config.telegramBotToken || !config.telegramChannelId)) {
+  if (!config.dryRun && !config.telegramBotToken) {
     logError({ message: "telegram_not_configured" });
     report.errors += 1;
     return report;
@@ -99,6 +102,8 @@ export async function runPipeline(deps: {
   report.itemsSelected = selected.length;
   const ordered = selected.slice().sort((a, b) => (a.publishedAt ?? 0) - (b.publishedAt ?? 0));
   const toRemember: string[] = [];
+  const blockedIds: string[] = [];
+  let subscribers: SubscriberMap | null = null;
 
   for (const item of ordered) {
     let result: AnalyzeResult;
@@ -164,14 +169,23 @@ export async function runPipeline(deps: {
       sourceUrl: item.link,
       disclaimer: config.disclaimer,
     });
-    const delivery = await deliverMessage({
+    if (!subscribers) subscribers = await loadSubscribers(deps.kv);
+    const recipients = broadcastTargets(subscribers, config.telegramChatId);
+    const delivery = await broadcastMessage({
       text,
       dryRun: config.dryRun,
       token: config.telegramBotToken,
-      channelId: config.telegramChannelId,
+      recipients,
       fetchImpl,
+      sleep: deps.sleep,
       logContext: { id: item.id, source: item.source, category: category.id, importance: result.analysis.importance },
     });
+    for (const chatId of delivery.blocked) {
+      if (subscribers[chatId] !== undefined) {
+        delete subscribers[chatId];
+        blockedIds.push(chatId);
+      }
+    }
     if (delivery.status === "failed") {
       report.errors += 1;
       logError({ message: "deliver_failed", id: item.id, detail: delivery.detail });
@@ -181,6 +195,21 @@ export async function runPipeline(deps: {
     else report.posted += 1;
     report.postedByCategory[category.id] = (report.postedByCategory[category.id] ?? 0) + 1;
     toRemember.push(item.id);
+  }
+
+  if (blockedIds.length > 0) {
+    const fresh = await loadSubscribers(deps.kv);
+    let removed = 0;
+    for (const chatId of blockedIds) {
+      if (fresh[chatId] !== undefined) {
+        delete fresh[chatId];
+        removed += 1;
+      }
+    }
+    if (removed > 0) {
+      report.blocked += removed;
+      await saveSubscribers(deps.kv, fresh);
+    }
   }
 
   if (toRemember.length > 0 || pruned.changed) {
@@ -223,5 +252,6 @@ function emptyReport(): RunReport {
     rejected: 0,
     errors: 0,
     postedByCategory: {},
+    blocked: 0,
   };
 }

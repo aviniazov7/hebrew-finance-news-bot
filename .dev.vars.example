@@ -1,4 +1,6 @@
 # Copy to .dev.vars for `wrangler dev`. Never commit .dev.vars.
 GEMINI_API_KEY=
 TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHANNEL_ID=
+TELEGRAM_WEBHOOK_SECRET=
+# Optional. Also copy each news item to this chat. Leave empty to skip.
+TELEGRAM_CHAT_ID=

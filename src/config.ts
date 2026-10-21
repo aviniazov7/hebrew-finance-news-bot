@@ -27,7 +27,8 @@ export interface ConfigInput {
   EXTRA_CATEGORIES?: string;
   GEMINI_API_KEY?: string;
   TELEGRAM_BOT_TOKEN?: string;
-  TELEGRAM_CHANNEL_ID?: string;
+  /** Optional extra chat, such as the operator's private chat. Empty skips it. */
+  TELEGRAM_CHAT_ID?: string;
 }
 
 export interface AppConfig {
@@ -46,7 +47,7 @@ export interface AppConfig {
   categories: Category[];
   geminiApiKey: string;
   telegramBotToken: string;
-  telegramChannelId: string;
+  telegramChatId: string;
 }
 
 export function parseDryRun(value: string | undefined): boolean {
@@ -79,7 +80,7 @@ export function parseConfig(input: ConfigInput): AppConfig {
     categories,
     geminiApiKey: input.GEMINI_API_KEY?.trim() ?? "",
     telegramBotToken: input.TELEGRAM_BOT_TOKEN?.trim() ?? "",
-    telegramChannelId: input.TELEGRAM_CHANNEL_ID?.trim() ?? "",
+    telegramChatId: input.TELEGRAM_CHAT_ID?.trim() ?? "",
   };
 }
 
