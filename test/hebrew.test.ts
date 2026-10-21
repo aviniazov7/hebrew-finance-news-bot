@@ -11,7 +11,6 @@ function analysis(overrides: Partial<Analysis> = {}): Analysis {
     summary: "המדד עלה לאט יותר מהתחזית. גם הליבה התקררה. שוק העבודה לא השתנה בהודעה הזו.",
     marketMeaning: "הפתעה כזו בדרך כלל מורידה ציפיות להעלאת ריבית ומזיזה אג״ח ומניות.",
     affects: ["ציפיות לריבית", "אג״ח ממשלתיות", "מדדי מניות", "שער הדולר"],
-    glossary: [],
     ...overrides,
   };
 }
@@ -33,21 +32,10 @@ describe("Hebrew check", () => {
     expect(containsInvestmentAdvice("למידע בלבד. אין כאן המלצה לפעולה בשוק.")).toBe(false);
   });
 
-  it("drops an English glossary line but keeps a Hebrew story", () => {
-    const clean = sanitizeAnalysis(
-      analysis({
-        glossary: [
-          { term: "CPI", hebrew: "CPI", explanation: "Consumer price index for households." },
-          {
-            term: "CPI",
-            hebrew: "מדד המחירים לצרכן",
-            explanation: "מדד שמראה בכמה התייקרו הקניות של משק בית רגיל.",
-          },
-        ],
-      }),
-    );
-    expect(clean?.glossary).toHaveLength(1);
-    expect(clean?.glossary[0]?.hebrew).toBe("מדד המחירים לצרכן");
+  it("keeps a Hebrew story and returns the cleaned affects list", () => {
+    const clean = sanitizeAnalysis(analysis());
+    expect(clean?.headline).toBe("מדד המחירים לצרכן עלה פחות מהצפוי");
+    expect(clean?.affects).toEqual(["ציפיות לריבית", "אג״ח ממשלתיות", "מדדי מניות", "שער הדולר"]);
   });
 
   it("rejects a draft that is not Hebrew or that gives advice", () => {

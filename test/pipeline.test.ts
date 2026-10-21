@@ -34,9 +34,6 @@ function hebrew(title: string): AnalyzeResult {
       summary: "זה סיכום קצר בעברית. יש כאן עוד משפט עם העובדה המרכזית. אין כאן מספר שהומצא.",
       marketMeaning: "האירוע יכול להזיז את השוק הרלוונטי בטווח הקצר.",
       affects: [],
-      glossary: [
-        { term: "CPI", hebrew: "מדד המחירים לצרכן", explanation: "מדד שמראה בכמה התייקרו הקניות של משק בית." },
-      ],
     },
   };
 }
@@ -132,7 +129,13 @@ describe("runPipeline", () => {
     const posted = telegram.find((body) => body.includes("מה זה אומר לשוק"));
     expect(posted).toBeTruthy();
     expect(posted).toContain("📈 מניות ·");
-    expect(posted).toContain("🎯 על מה זה משפיע: מדדי המניות, מניות שבבים, מניות הבנקים, אג״ח חברות, תיאבון הסיכון");
+    expect(posted).toContain(
+      "🎯 על מה זה משפיע: #מדדי_המניות #מניות_שבבים #מניות_הבנקים #אג״ח_חברות #תיאבון_הסיכון",
+    );
+    expect(posted).toContain('parse_mode":"HTML"');
+    expect(posted).toContain('<a href=\\"https://example.com/major\\">CNBC</a>');
+    expect(posted).toContain('"is_disabled":false');
+    expect(posted).not.toContain("מילון");
     expect(posted).toContain("\"chat_id\":\"101\"");
     expect(posted).not.toContain("TEST");
   });

@@ -1,7 +1,7 @@
 import { sanitizeAnalysis } from "./hebrew.ts";
 import { logError, logInfo } from "./log.ts";
 import { IMPORTANCE_RUBRIC } from "./scoring.ts";
-import type { Analysis, Category, GlossaryEntry, NewsItem } from "./types.ts";
+import type { Analysis, Category, NewsItem } from "./types.ts";
 import { DEFAULT_WORKERS_AI_MODEL, runWorkersAi, type WorkersAiBinding } from "./workers-ai.ts";
 
 export class GeminiError extends Error {
@@ -34,23 +34,11 @@ const RESPONSE_SCHEMA = {
       minItems: 3,
       maxItems: 6,
       description:
-        "3 to 6 short Hebrew noun phrases naming concrete things this story can move, such as mortgages, deposit rates, or the dollar-shekel rate.",
+        "3 to 6 short Hebrew tag terms, one to three words each, naming concrete things this story can move. No hash character and no full sentence.",
       items: { type: "string" },
     },
-    glossary: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          term: { type: "string" },
-          hebrew: { type: "string" },
-          explanation: { type: "string" },
-        },
-        required: ["term", "hebrew", "explanation"],
-      },
-    },
   },
-  required: ["importance", "category", "headline", "summary", "marketMeaning", "affects", "glossary"],
+  required: ["importance", "category", "headline", "summary", "marketMeaning", "affects"],
 };
 
 export function buildSystemInstruction(categories: readonly Category[]): string {
@@ -58,11 +46,10 @@ export function buildSystemInstruction(categories: readonly Category[]): string 
   return [
     "You edit a Telegram channel that explains global finance in simple Hebrew for adults who do not work in finance.",
     "Cover the whole market: crypto, stocks, capital markets, bonds, earnings, central banks, macro data, commodities, currencies, Israel, IPOs, mergers, regulation, housing, trade and geopolitics, big tech, and banks. Do not favor crypto.",
-    "The source text may be English or Hebrew. Always write headline, summary, marketMeaning, affects, and glossary explanations in plain everyday Hebrew.",
+    "The source text may be English or Hebrew. Always write headline, summary, marketMeaning, and affects in plain everyday Hebrew.",
     "summary is 2 or 3 short sentences. Use only facts present in the source. Do not invent numbers, quotes, or causes.",
     "marketMeaning is one sentence on how stocks, bonds, currencies, commodities, or crypto might react. Describe the mechanism. Do not tell anyone to buy, sell, hold, or invest. Do not say כדאי, מומלץ, קנו, or מכרו.",
-    "affects is 3 to 6 short Hebrew noun phrases for concrete things this specific story can move. For an interest-rate decision a good list is: משכנתאות, הלוואות, ריבית על פיקדונות, מניות צמיחה וטק, שער הדולר-שקל, קריפטו. Name things a reader recognizes. Do not write a sentence and do not give advice.",
-    "glossary has 0, 1, or 2 terms a non-expert may not know, such as hedge fund, CPI, rate cut, yield, ETF, or tariff. term is the English name. hebrew is the everyday Hebrew name. explanation is one short Hebrew sentence. If the story is already plain, return an empty array.",
+    "affects is 3 to 6 short Hebrew tag terms (about one to three words) for concrete things this specific story can move. They are shown as Telegram hashtags, so keep each term short. For an interest-rate decision a good list is: משכנתאות, הלוואות, ריבית על פיקדונות, מניות צמיחה וטק, שער הדולר-שקל, קריפטו. Do not include a # character, do not write a sentence, and do not give advice.",
     "Prefer the feed category hint unless the story clearly belongs in another allowed category. Do not label a story as crypto unless it is about cryptocurrency.",
     `Allowed categories: ${allowed}.`,
     IMPORTANCE_RUBRIC,
@@ -110,7 +97,6 @@ export function parseAnalysis(text: string): Analysis | null {
     summary: record.summary,
     marketMeaning: record.marketMeaning,
     affects: asAffects(record.affects),
-    glossary: asGlossary(record.glossary),
   };
 }
 
@@ -360,20 +346,3 @@ function asAffects(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === "string");
 }
 
-function asGlossary(value: unknown): GlossaryEntry[] {
-  if (!Array.isArray(value)) return [];
-  const entries: GlossaryEntry[] = [];
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") continue;
-    const record = entry as Record<string, unknown>;
-    if (
-      typeof record.term !== "string" ||
-      typeof record.hebrew !== "string" ||
-      typeof record.explanation !== "string"
-    ) {
-      continue;
-    }
-    entries.push({ term: record.term, hebrew: record.hebrew, explanation: record.explanation });
-  }
-  return entries;
-}

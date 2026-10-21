@@ -17,6 +17,8 @@ describe("broadcast", () => {
       fetchImpl: async (_input, init) => {
         const body = typeof init?.body === "string" ? init.body : "";
         const chatId = /"chat_id":"(\d+)"/.exec(body)?.[1] ?? "";
+        expect(body).toContain('"parse_mode":"HTML"');
+        expect(body).toContain('"is_disabled":false');
         chats.push(chatId);
         if (chatId === "2") {
           return new Response(JSON.stringify({ ok: false, error_code: 403, description: "Forbidden" }), { status: 403 });

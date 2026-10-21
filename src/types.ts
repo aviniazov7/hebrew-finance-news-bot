@@ -23,19 +23,12 @@ export interface NewsItem {
   publishedAt: number | null;
 }
 
-export interface GlossaryEntry {
-  term: string;
-  hebrew: string;
-  explanation: string;
-}
-
 export interface Analysis {
   importance: number;
   category: string;
   headline: string;
   summary: string;
   marketMeaning: string;
-  /** Three to six short Hebrew phrases. Empty when the model omitted a usable list. */
+  /** Three to six short Hebrew tag terms. Empty when the model omitted a usable list. */
   affects: string[];
-  glossary: GlossaryEntry[];
 }
