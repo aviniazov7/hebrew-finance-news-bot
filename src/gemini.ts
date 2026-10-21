@@ -17,7 +17,7 @@ export type AnalyzeResult =
   | { ok: false; remember: boolean; reason: "auth" | "rate_limited" | "rejected" | "transport" };
 
 export const HEBREW_RETRY_NOTE =
-  "הניסיון הקודם לא היה בעברית תקינה או שכלל ניסוח של המלצה. כתוב מחדש את headline, summary ו-marketMeaning בעברית יומיומית פשוטה, בלי לומר לקורא לקנות, למכור או להשקיע.";
+  "הניסיון הקודם לא היה בעברית תקינה או שכלל ניסוח של המלצה. כתוב מחדש את headline, summary, marketMeaning ו-affects בעברית יומיומית פשוטה, בלי לומר לקורא לקנות, למכור או להשקיע.";
 
 const RESPONSE_SCHEMA = {
   type: "object",
@@ -27,6 +27,14 @@ const RESPONSE_SCHEMA = {
     headline: { type: "string" },
     summary: { type: "string" },
     marketMeaning: { type: "string" },
+    affects: {
+      type: "array",
+      minItems: 3,
+      maxItems: 6,
+      description:
+        "3 to 6 short Hebrew noun phrases naming concrete things this story can move, such as mortgages, deposit rates, or the dollar-shekel rate.",
+      items: { type: "string" },
+    },
     glossary: {
       type: "array",
       items: {
@@ -40,7 +48,7 @@ const RESPONSE_SCHEMA = {
       },
     },
   },
-  required: ["importance", "category", "headline", "summary", "marketMeaning", "glossary"],
+  required: ["importance", "category", "headline", "summary", "marketMeaning", "affects", "glossary"],
 };
 
 export function buildSystemInstruction(categories: readonly Category[]): string {
@@ -48,9 +56,10 @@ export function buildSystemInstruction(categories: readonly Category[]): string 
   return [
     "You edit a Telegram channel that explains global finance in simple Hebrew for adults who do not work in finance.",
     "Cover the whole market: crypto, stocks, capital markets, bonds, earnings, central banks, macro data, commodities, currencies, Israel, IPOs, mergers, regulation, housing, trade and geopolitics, big tech, and banks. Do not favor crypto.",
-    "The source text may be English or Hebrew. Always write headline, summary, marketMeaning, and glossary explanations in plain everyday Hebrew.",
+    "The source text may be English or Hebrew. Always write headline, summary, marketMeaning, affects, and glossary explanations in plain everyday Hebrew.",
     "summary is 2 or 3 short sentences. Use only facts present in the source. Do not invent numbers, quotes, or causes.",
     "marketMeaning is one sentence on how stocks, bonds, currencies, commodities, or crypto might react. Describe the mechanism. Do not tell anyone to buy, sell, hold, or invest. Do not say כדאי, מומלץ, קנו, or מכרו.",
+    "affects is 3 to 6 short Hebrew noun phrases for concrete things this specific story can move. For an interest-rate decision a good list is: משכנתאות, הלוואות, ריבית על פיקדונות, מניות צמיחה וטק, שער הדולר-שקל, קריפטו. Name things a reader recognizes. Do not write a sentence and do not give advice.",
     "glossary has 0, 1, or 2 terms a non-expert may not know, such as hedge fund, CPI, rate cut, yield, ETF, or tariff. term is the English name. hebrew is the everyday Hebrew name. explanation is one short Hebrew sentence. If the story is already plain, return an empty array.",
     "Prefer the feed category hint unless the story clearly belongs in another allowed category. Do not label a story as crypto unless it is about cryptocurrency.",
     `Allowed categories: ${allowed}.`,
@@ -98,6 +107,7 @@ export function parseAnalysis(text: string): Analysis | null {
     headline: record.headline,
     summary: record.summary,
     marketMeaning: record.marketMeaning,
+    affects: asAffects(record.affects),
     glossary: asGlossary(record.glossary),
   };
 }
@@ -238,6 +248,12 @@ function parseImportance(value: unknown): number | null {
   const rounded = Math.round(parsed);
   if (rounded < 1 || rounded > 5) return null;
   return rounded;
+}
+
+function asAffects(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string");
 }
 
 function asGlossary(value: unknown): GlossaryEntry[] {

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { FALLBACK_AFFECTS } from "../src/affects.ts";
 import { DEFAULT_CATEGORIES, DEFAULT_FEEDS } from "../src/catalog.ts";
+import { isPrimarilyHebrew } from "../src/hebrew.ts";
 
 describe("default catalog", () => {
   it("gives every category at least one feed", () => {
@@ -28,5 +30,25 @@ describe("default catalog", () => {
     expect(priority.has("Globes — capital markets")).toBe(true);
     expect(priority.has("Google News — CPI and jobs")).toBe(true);
     expect(priority.has("ECB")).toBe(true);
+  });
+
+  it("has a Hebrew fallback affects list for every category", () => {
+    for (const category of DEFAULT_CATEGORIES) {
+      const affects = FALLBACK_AFFECTS[category.id];
+      expect(affects).toBeTruthy();
+      expect(affects!.length).toBeGreaterThanOrEqual(3);
+      expect(affects!.length).toBeLessThanOrEqual(6);
+      for (const phrase of affects!) {
+        expect(isPrimarilyHebrew(phrase, { minHebrew: 2, minRatio: 0.5 })).toBe(true);
+      }
+    }
+    expect(FALLBACK_AFFECTS["central-banks"]).toEqual([
+      "משכנתאות",
+      "הלוואות",
+      "ריבית על פיקדונות",
+      "מניות צמיחה וטק",
+      "שער הדולר-שקל",
+      "קריפטו",
+    ]);
   });
 });

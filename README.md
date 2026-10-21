@@ -1,6 +1,6 @@
 # Hebrew Market News Bot
 
-A Cloudflare Worker that watches public finance RSS feeds and posts the stories that matter to a Telegram channel, in plain Hebrew. Each message has a short summary, one line on what it may mean for markets, and a glossary for jargon such as “hedge fund”, “CPI”, or “rate cut”.
+A Cloudflare Worker that watches public finance RSS feeds and posts the stories that matter to a Telegram channel, in plain Hebrew. Each message has a short summary, one line on what it may mean for markets, a short list of what the news can affect, and a glossary for jargon such as “hedge fund”, “CPI”, or “rate cut”.
 
 It covers the whole market, not a crypto feed with a few other headlines mixed in: stocks, capital markets, bonds and yields, earnings, the Fed and other central banks, CPI and jobs, commodities, currencies (including the shekel), Israel, IPOs, mergers, regulation, housing, trade and tariffs, big tech, and banks.
 
@@ -81,6 +81,8 @@ Put the first document in `EXTRA_CATEGORIES` and the second in `EXTRA_FEEDS`.
 
 מה זה אומר לשוק: משפט אחד על התגובה האפשרית של השוק.
 
+🎯 על מה זה משפיע: משכנתאות, הלוואות, ריבית על פיקדונות, מניות צמיחה וטק
+
 מילון: קרן גידור (hedge fund) — הסבר קצר בעברית.
 
 מקור: CNBC Finance — https://example.com/story
@@ -88,7 +90,7 @@ Put the first document in `EXTRA_CATEGORIES` and the second in `EXTRA_FEEDS`.
 למידע בלבד. אין כאן המלצה לפעולה בשוק.
 ```
 
-The glossary line is omitted when the story has no jargon. The disclaimer is `DISCLAIMER`. The model is told not to recommend buying, selling, or investing, and a draft that does is discarded.
+The affects line always lists three to six concrete things in simple Hebrew, separated by commas. Gemini writes that list. If the model omits it, or fewer than three phrases pass the Hebrew check, the worker uses a built-in list for that category (a rate decision falls back to mortgages, loans, deposit rates, growth stocks, the dollar-shekel rate, and crypto). Topics added through config use a general list: stock indexes, government bonds, exchange rates, the cost of credit, and risk appetite. The glossary line is omitted when the story has no jargon. The disclaimer is `DISCLAIMER`. The model is told not to recommend buying, selling, or investing, and a draft that does is discarded.
 
 ## Free-tier shape
 
@@ -186,6 +188,8 @@ These messages are **not** a live Gemini call and **not** live news. No `GEMINI_
 
 מה זה אומר לשוק: כשיוצאת אזהרת רגולציה חדה, מחירי הקריפטו נוטים לזוז מהר, ולפעמים גם מניות של חברות שמחזיקות ביטקוין זזות איתם.
 
+🎯 על מה זה משפיע: ביטקוין, מטבעות גדולים, מניות חברות שמחזיקות ביטקוין, קרנות סל על ביטקוין, בורסות קריפטו
+
 מילון: קרן סל (ETF) — מוצר שנסחר בבורסה כמו מניה ועוקב אחרי מדד או אחרי ביטקוין, בלי שצריך לקנות את המטבע עצמו.
 
 מקור: CoinDesk — https://example.com/fixtures/crypto
@@ -201,6 +205,8 @@ These messages are **not** a live Gemini call and **not** live news. No `GEMINI_
 מדדי המניות הגדולים בארה״ב ירדו ביום מסחר שבו חלק מהחברות עקפו את תחזית הרווח וחלק פספסו. ירידות חדות יותר נראו במניות שבבים. לא פורסם אירוע חירום במסחר.
 
 מה זה אומר לשוק: יום מעורב כזה בדרך כלל מגדיל את התנודות במדדים, בלי לשנות לבד את כיוון הריבית או את שוק האג״ח.
+
+🎯 על מה זה משפיע: מדדי וול סטריט, מניות שבבים, תחזיות רווח, תנודתיות במסחר, אג״ח
 
 מילון: מדד (index) — מספר שמרכז את מחירי קבוצת מניות, למשל 500 החברות הגדולות בארה״ב, כדי לראות איך השוק זז.
 
@@ -218,6 +224,8 @@ These messages are **not** a live Gemini call and **not** live news. No `GEMINI_
 
 מה זה אומר לשוק: ככל שההחלטה מתקרבת, פערי המחירים בין קונים למוכרים יכולים להתרחב, ולכן תנועה חדה בשני הכיוונים אפשרית מיד אחרי ההודעה.
 
+🎯 על מה זה משפיע: מניות, אג״ח, מרווחי קנייה ומכירה, מחזורי מסחר, שערי מטבע
+
 מילון: נזילות (liquidity) — כמה קל לקנות או למכור נכס בלי להזיז את המחיר שלו בצורה חדה.
 
 מקור: MarketWatch — https://example.com/fixtures/markets
@@ -233,6 +241,8 @@ These messages are **not** a live Gemini call and **not** live news. No `GEMINI_
 מחיר האג״ח הארוכות ירד, ולכן התשואה עליהן עלתה. העלייה הגיעה אחרי נתונים שהראו שהכלכלה עדיין חזקה. אג״ח קצרות יותר זזו פחות.
 
 מה זה אומר לשוק: תשואה גבוהה יותר על אג״ח ממשלתיות מייקרת את עלות הגיוס של ממשלות וחברות, ויכולה ללחוץ על מחירי מניות.
+
+🎯 על מה זה משפיע: אג״ח לעשר שנים, עלות גיוס של חברות, מחירי מניות, ריבית משכנתאות, שער הדולר
 
 מילון: תשואה (yield) — הריבית שמקבל מי שמחזיק באג״ח אם הוא מחזיק בה עד הסוף. כשמחיר האג״ח יורד, התשואה עולה.
 
@@ -250,6 +260,8 @@ These messages are **not** a live Gemini call and **not** live news. No `GEMINI_
 
 מה זה אומר לשוק: דוח כזה יכול למשוך את כל סקטור הטכנולוגיה, כי משקיעים מעדכנים לפיו את הציפיות גם מחברות דומות.
 
+🎯 על מה זה משפיע: מניית החברה, מניות הטכנולוגיה, תחזיות רווח, הוצאות על תשתיות, מדדי המניות
+
 מילון: רווח למניה (EPS) — הרווח של החברה מחולק במספר המניות. כך משווים בין חברות בגדלים שונים.
 
 מקור: CNBC Earnings — https://example.com/fixtures/earnings
@@ -265,6 +277,8 @@ These messages are **not** a live Gemini call and **not** live news. No `GEMINI_
 הבנק המרכזי של ארה״ב הוריד את הריבית ברבע נקודת אחוז. ההחלטה התקבלה אחרי שהאינפלציה התמתנה. זו הפעם השנייה השנה שהריבית יורדת.
 
 מה זה אומר לשוק: הורדת ריבית כזו מוזילה בדרך כלל הלוואות חדשות, ויכולה לתמוך במניות ובאג״ח, או להחליש את הדולר אם השוק קורא בה סימן לחולשה.
+
+🎯 על מה זה משפיע: משכנתאות, הלוואות, ריבית על פיקדונות, מניות צמיחה וטק, שער הדולר-שקל, קריפטו
 
 מילון: הורדת ריבית (rate cut) — הבנק המרכזי מוזיל את מחיר הכסף כדי לעודד פעילות בכלכלה.
 
@@ -282,6 +296,8 @@ These messages are **not** a live Gemini call and **not** live news. No `GEMINI_
 
 מה זה אומר לשוק: הפתעה כלפי מטה במדד כזה בדרך כלל מורידה ציפיות להעלאת ריבית, ולכן אג״ח ומניות יכולות לעלות מיד אחרי הפרסום.
 
+🎯 על מה זה משפיע: ציפיות לריבית, אג״ח ממשלתיות, מדדי מניות, שער הדולר, מחירי הזהב
+
 מילון: מדד המחירים לצרכן (CPI) — מדד שמראה בכמה התייקרו הקניות של משק בית רגיל.; דוח תעסוקה (jobs report) — הפרסום החודשי שמראה כמה משרות נוספו וכמה אנשים מחפשים עבודה.
 
 מקור: CNBC Economy — https://example.com/fixtures/macro
@@ -297,6 +313,8 @@ These messages are **not** a live Gemini call and **not** live news. No `GEMINI_
 מחיר חבית נפט גולמי עלה אחרי דיווחים על שיבוש אפשרי בהובלה. גם מחירי הגז זזו באותו כיוון. הזהב נשאר יציב יחסית באותו יום.
 
 מה זה אומר לשוק: נפט יקר יותר יכול להעלות עלויות של חברות תעופה ותחבורה, ולפעמים גם את ציפיות האינפלציה.
+
+🎯 על מה זה משפיע: מחיר הנפט, מחיר הגז, חברות תעופה, עלויות תחבורה, ציפיות לאינפלציה
 
 מילון: חבית (barrel) — יחידת המדידה המקובלת לנפט גולמי בשוק העולמי.
 
@@ -314,6 +332,8 @@ These messages are **not** a live Gemini call and **not** live news. No `GEMINI_
 
 מה זה אומר לשוק: שקל חלש יותר מייקר יבוא ומחירי נסיעות לחו״ל, ויכול לתמוך בחברות ישראליות שמוכרות בדולרים.
 
+🎯 על מה זה משפיע: שער הדולר-שקל, שער האירו-שקל, מחירי יבוא, נסיעות לחו״ל, חברות שמוכרות בדולרים
+
 מילון: שער חליפין (exchange rate) — כמה יחידות ממטבע אחד צריך כדי לקנות מטבע אחר, למשל כמה שקלים שווים דולר אחד.
 
 מקור: Google News — currencies — https://example.com/fixtures/forex
@@ -329,6 +349,8 @@ These messages are **not** a live Gemini call and **not** live news. No `GEMINI_
 בנק ישראל החליט לא לשנות את הריבית. הנגיד אמר שהאינפלציה עדיין מעל היעד. מדד תל אביב 35 נע סביב ההודעה בלי כיוון חד.
 
 מה זה אומר לשוק: ריבית ללא שינוי משאירה את עלות המשכנתאות והאשראי העסקי קרובה לרמה הנוכחית, והשוק יחפש רמזים להחלטה הבאה.
+
+🎯 על מה זה משפיע: משכנתאות, הלוואות, ריבית על פיקדונות, מדד תל אביב, שער הדולר-שקל, מניות הבנקים
 
 מילון: ריבית בנק ישראל (policy rate) — הריבית שבה הבנק המרכזי מלווה כסף לבנקים. היא משפיעה על פיקדונות, משכנתאות והלוואות.
 
@@ -346,6 +368,8 @@ These messages are **not** a live Gemini call and **not** live news. No `GEMINI_
 
 מה זה אומר לשוק: הנפקה גדולה יכולה למשוך כסף ממניות אחרות באותו סקטור ביום המסחר הראשון, כי קונים מפנים מזומן לעסקה החדשה.
 
+🎯 על מה זה משפיע: מניות תוכנה, כסף פנוי של משקיעים, בנקים מובילי ההנפקה, שוק ההנפקות, מדדי המניות
+
 מילון: הנפקה ראשונית (IPO) — הפעם הראשונה שחברה מוכרת מניות לציבור והמניה מתחילה להיסחר בבורסה.
 
 מקור: Google News — IPOs — https://example.com/fixtures/ipo
@@ -361,6 +385,8 @@ These messages are **not** a live Gemini call and **not** live news. No `GEMINI_
 החברה הודיעה שתרכוש חברה אחרת בעסקה של כמה מיליארדי דולרים. העסקה עוד צריכה אישור של רגולטורים. מניית החברה הנרכשת עלתה, ומניית הרוכשת ירדה מעט.
 
 מה זה אומר לשוק: בעסקאות כאלה המניה הנרכשת בדרך כלל מתקרבת למחיר שהוצע, והרוכשת זזה לפי החשש מתשלום גבוה מדי או מחיסכון עתידי בעלויות.
+
+🎯 על מה זה משפיע: מניית הנרכשת, מניית הרוכשת, מניות תרופות, אישורי רגולציה, אג״ח של החברות
 
 מילון: מיזוג ורכישה (M&A) — עסקה שבה חברה קונה חברה אחרת, או ששתי חברות מתאחדות לחברה אחת.
 
@@ -378,6 +404,8 @@ These messages are **not** a live Gemini call and **not** live news. No `GEMINI_
 
 מה זה אומר לשוק: בדיקה כזו יכולה ללחוץ על מניית החברה ועל קרנות דומות, כל עוד לא ברור אם יהיה קנס או רק דרישה לתיקון דיווחים.
 
+🎯 על מה זה משפיע: מניית הקרן, קרנות דומות, דיווחים לציבור, קנסות אפשריים, אמון המשקיעים
+
 מילון: הרשות לניירות ערך (SEC) — הגוף בארה״ב שמפקח על הבורסות ועל המידע שחברות חייבות לפרסם למשקיעים.
 
 מקור: SEC — https://example.com/fixtures/regulation
@@ -393,6 +421,8 @@ These messages are **not** a live Gemini call and **not** live news. No `GEMINI_
 מספר הבתים שנמכרו ירד לעומת החודש הקודם. ריבית המשכנתא ל-30 שנה כמעט לא זזה. מלאי הבתים למכירה עלה מעט.
 
 מה זה אומר לשוק: שוק דיור איטי יותר יכול לקרר הוצאות של משקי בית ואת הביקוש למוצרי בית, ולהשפיע על הציפיות להורדת ריבית.
+
+🎯 על מה זה משפיע: ריבית משכנתא, מכירות בתים, מניות חברות בנייה, הוצאות משק הבית, ציפיות לריבית
 
 מילון: ריבית משכנתא (mortgage rate) — הריבית על הלוואה לקניית דירה. כשהיא גבוהה, ההחזר החודשי יקר יותר ופחות קונים נכנסים לשוק.
 
@@ -410,6 +440,8 @@ These messages are **not** a live Gemini call and **not** live news. No `GEMINI_
 
 מה זה אומר לשוק: מכס חדש יכול לייקר מוצרים, לחתוך רווחים של יצואנים, ולהזיז גם סחורות ומטבעות שקשורים לאותו נתיב סחר.
 
+🎯 על מה זה משפיע: מניות יצואנים, מחירי יבוא, שערי מטבע, סחורות, שרשראות אספקה
+
 מילון: מכס (tariff) — מס שמדינה גובה על סחורה שחוצה את הגבול. הוא יכול לייקר את המוצר לצרכן או לפגוע ברווח של היבואן.
 
 מקור: Google News — trade and tariffs — https://example.com/fixtures/geopolitics
@@ -426,6 +458,8 @@ These messages are **not** a live Gemini call and **not** live news. No `GEMINI_
 
 מה זה אומר לשוק: כשחברות הענק משנות את תקציב הבינה המלאכותית, כל שרשרת השבבים, החשמל והענן יכולה לזוז יחד.
 
+🎯 על מה זה משפיע: מניות שבבים, ספקיות ענן, הוצאות על בינה מלאכותית, חוות שרתים, מדדי הטכנולוגיה
+
 מילון: הוצאות הון (capex) — כסף שחברה מוציאה על ציוד ומבנים לשנים קדימה, למשל שרתים, ולא על הוצאה שוטפת כמו משכורות.
 
 מקור: CNBC Tech — https://example.com/fixtures/tech
@@ -441,6 +475,8 @@ These messages are **not** a live Gemini call and **not** live news. No `GEMINI_
 הבנק דיווח על רווח גבוה מהמסחר במניות ובאג״ח, בין השאר מול קרנות גידור. במקביל הוא הגדיל את הרזרבה להפסדי אשראי. המניה נעה בשני הכיוונים במהלך היום.
 
 מה זה אומר לשוק: רווח ממסחר יכול לחזק את מניות הבנקים בטווח הקצר, אבל רזרבה גבוהה יותר להפסדים מאותתת שהבנק רואה יותר סיכון אצל לווים.
+
+🎯 על מה זה משפיע: מניות הבנקים, רווחי מסחר, הפסדי אשראי, פיקדונות, קרנות גידור
 
 מילון: קרן גידור (hedge fund) — קרן שמנהלת כסף של לקוחות עשירים ומנסה להרוויח גם כשהשוק יורד, לפעמים בעזרת הלוואות.
 

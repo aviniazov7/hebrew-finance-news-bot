@@ -1,3 +1,4 @@
+import { resolveAffects } from "./hebrew.ts";
 import type { Category, GlossaryEntry } from "./types.ts";
 import { collapseWhitespace, safeHttpUrl } from "./text.ts";
 
@@ -6,6 +7,8 @@ export interface FormatInput {
   headline: string;
   summary: string;
   marketMeaning: string;
+  /** Model phrases. A short or empty list is replaced by the category default. */
+  affects?: readonly string[];
   glossary?: readonly GlossaryEntry[];
   sourceName: string;
   sourceUrl: string;
@@ -18,6 +21,7 @@ export function formatTelegramMessage(input: FormatInput): string {
   const headline = collapseWhitespace(input.headline);
   let summary = collapseWhitespace(input.summary);
   let market = collapseWhitespace(input.marketMeaning).replace(/^מה זה אומר לשוק:\s*/, "");
+  let affects = resolveAffects(input.affects, input.category.id);
   let glossary = (input.glossary ?? [])
     .map((entry) => ({
       term: collapseWhitespace(entry.term),
@@ -36,6 +40,8 @@ export function formatTelegramMessage(input: FormatInput): string {
       summary,
       "",
       `מה זה אומר לשוק: ${market}`,
+      "",
+      `🎯 על מה זה משפיע: ${affects.join(", ")}`,
     ];
     if (glossary.length > 0) {
       const bits = glossary.map((entry) => `${entry.hebrew} (${entry.term}) — ${entry.explanation}`);
@@ -54,6 +60,10 @@ export function formatTelegramMessage(input: FormatInput): string {
   if (message.length <= TELEGRAM_LIMIT) return message;
 
   market = trimWithEllipsis(market, 280);
+  message = build();
+  if (message.length <= TELEGRAM_LIMIT) return message;
+
+  affects = affects.slice(0, 3);
   message = build();
   if (message.length <= TELEGRAM_LIMIT) return message;
 

@@ -158,6 +158,7 @@ export async function runPipeline(deps: {
       headline: result.analysis.headline,
       summary: result.analysis.summary,
       marketMeaning: result.analysis.marketMeaning,
+      affects: result.analysis.affects,
       glossary: result.analysis.glossary,
       sourceName: item.source,
       sourceUrl: item.link,

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { FALLBACK_AFFECTS, GENERIC_AFFECTS } from "../src/affects.ts";
 import { DEFAULT_CATEGORIES } from "../src/catalog.ts";
 import { DEFAULT_DISCLAIMER } from "../src/config.ts";
 import { formatTelegramMessage } from "../src/format.ts";
@@ -16,6 +17,7 @@ describe("formatTelegramMessage", () => {
       headline: "וול סטריט נסגרה בירידות",
       summary: "המדדים ירדו. מניות השבבים הובילו את הירידה. לא הייתה עצירת מסחר.",
       marketMeaning: "מה זה אומר לשוק: יום כזה מגדיל תנודות במדדים.",
+      affects: ["מדדי המניות", "מניות שבבים", "אג״ח חברות"],
       glossary: [
         { term: "hedge fund", hebrew: "קרן גידור", explanation: "קרן שמנהלת כסף של לקוחות עשירים." },
         { term: "CPI", hebrew: "מדד המחירים לצרכן", explanation: "מדד שמראה בכמה התייקרו הקניות." },
@@ -27,6 +29,12 @@ describe("formatTelegramMessage", () => {
     });
     expect(text.startsWith("📈 מניות · וול סטריט נסגרה בירידות")).toBe(true);
     expect(text).toContain("מה זה אומר לשוק: יום כזה מגדיל תנודות במדדים.");
+    const marketAt = text.indexOf("מה זה אומר לשוק:");
+    const affectsAt = text.indexOf("🎯 על מה זה משפיע: מדדי המניות, מניות שבבים, אג״ח חברות");
+    const glossaryAt = text.indexOf("מילון:");
+    expect(marketAt).toBeGreaterThanOrEqual(0);
+    expect(affectsAt).toBeGreaterThan(marketAt);
+    expect(glossaryAt).toBeGreaterThan(affectsAt);
     expect(text).toContain("מילון: קרן גידור (hedge fund) — קרן שמנהלת כסף של לקוחות עשירים.; מדד המחירים לצרכן (CPI)");
     expect(text).not.toContain("קרן סל");
     expect(text).toContain("מקור: CNBC — https://example.com/story");
@@ -43,6 +51,11 @@ describe("formatTelegramMessage", () => {
       sourceUrl: "https://example.com/story",
     });
     expect(text).not.toContain("מילון:");
+    expect(text).toContain(`🎯 על מה זה משפיע: ${FALLBACK_AFFECTS.stocks?.join(", ")}`);
+    const affectsAt = text.indexOf("🎯 על מה זה משפיע:");
+    const sourceAt = text.indexOf("מקור:");
+    expect(affectsAt).toBeGreaterThan(text.indexOf("מה זה אומר לשוק:"));
+    expect(sourceAt).toBeGreaterThan(affectsAt);
   });
 
   it("uses a custom category and refuses a non-http source link as a bare url", () => {
@@ -51,11 +64,13 @@ describe("formatTelegramMessage", () => {
       headline: "קרנות אשראי פרטי גייסו פחות כסף",
       summary: "הגיוס ברבעון ירד. מנהלי הקרנות דיברו על לווים זהירים יותר.",
       marketMeaning: "גיוס חלש יותר יכול לייקר אשראי לחברות בינוניות.",
+      affects: ["yields", "credit"],
       sourceName: "Example",
       sourceUrl: "javascript:alert(1)",
       disclaimer: "",
     });
     expect(text.startsWith("🏦 אשראי פרטי · קרנות אשראי פרטי גייסו פחות כסף")).toBe(true);
+    expect(text).toContain(`🎯 על מה זה משפיע: ${GENERIC_AFFECTS.join(", ")}`);
     expect(text).not.toContain("javascript:");
     expect(text).not.toContain(DEFAULT_DISCLAIMER);
   });
@@ -86,7 +101,18 @@ describe("fixture samples", () => {
       expect(category).toBeTruthy();
       expect(sample.text.startsWith(`${category?.emoji} ${category?.labelHe} ·`)).toBe(true);
       expect(sample.text).toContain("מה זה אומר לשוק:");
+      expect(sample.text).toContain("🎯 על מה זה משפיע:");
       expect(sample.text).toContain("מילון:");
+      const marketAt = sample.text.indexOf("מה זה אומר לשוק:");
+      const affectsAt = sample.text.indexOf("🎯 על מה זה משפיע:");
+      const glossaryAt = sample.text.indexOf("מילון:");
+      expect(affectsAt).toBeGreaterThan(marketAt);
+      expect(glossaryAt).toBeGreaterThan(affectsAt);
+      const affectsLine = sample.text.slice(affectsAt, sample.text.indexOf("\n", affectsAt));
+      const phrases = affectsLine.replace(/^🎯 על מה זה משפיע:\s*/, "").split(", ");
+      expect(phrases.length).toBeGreaterThanOrEqual(3);
+      expect(phrases.length).toBeLessThanOrEqual(6);
+      for (const phrase of phrases) expect(isPrimarilyHebrew(phrase, { minHebrew: 2, minRatio: 0.5 })).toBe(true);
       expect(sample.text).toContain("מקור:");
       expect(sample.text).toContain(DEFAULT_DISCLAIMER);
       const [headline = "", , summary = "", , market = ""] = sample.text.split("\n");

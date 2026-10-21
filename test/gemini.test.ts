@@ -21,6 +21,8 @@ describe("Gemini parsing", () => {
     expect(system).toContain("not automatically more important");
     expect(system).toContain("central-banks");
     expect(system).toContain("israel");
+    expect(system).toContain("affects is 3 to 6 short Hebrew noun phrases");
+    expect(system).toContain("משכנתאות, הלוואות, ריבית על פיקדונות");
     const reminded = buildUserPrompt(item, true);
     expect(reminded).toContain(HEBREW_RETRY_NOTE);
     expect(reminded).toContain("Feed category hint: central-banks");
@@ -36,6 +38,7 @@ describe("Gemini parsing", () => {
           headline: "כותרת",
           summary: "סיכום",
           marketMeaning: "השפעה",
+          affects: ["משכנתאות, הלוואות", "ריבית על פיקדונות", 4, "מניות צמיחה וטק"],
           glossary: [{ term: "CPI", hebrew: "מדד", explanation: "הסבר" }, { term: 1 }],
         }) +
         "\n```",
@@ -44,8 +47,12 @@ describe("Gemini parsing", () => {
       importance: 4,
       category: "macro",
       headline: "כותרת",
+      affects: ["משכנתאות, הלוואות", "ריבית על פיקדונות", "מניות צמיחה וטק"],
       glossary: [{ term: "CPI", hebrew: "מדד", explanation: "הסבר" }],
     });
+    expect(parseAnalysis('{"importance":4,"headline":"כותרת","summary":"סיכום","marketMeaning":"השפעה"}')?.affects).toEqual(
+      [],
+    );
     expect(parseAnalysis('{"importance":9,"headline":"x","summary":"y","marketMeaning":"z"}')).toBeNull();
     expect(parseAnalysis("not json")).toBeNull();
   });

@@ -35,5 +35,7 @@ export interface Analysis {
   headline: string;
   summary: string;
   marketMeaning: string;
+  /** Three to six short Hebrew phrases. Empty when the model omitted a usable list. */
+  affects: string[];
   glossary: GlossaryEntry[];
 }
