@@ -1,6 +1,7 @@
 import type { AppConfig } from "./config.ts";
 import { hasSeen, loadSeen, pruneSeen, remember, saveSeen, seenStorageKey, type KvStore } from "./dedupe.ts";
 import { analyzeItem, type AnalyzeResult } from "./gemini.ts";
+import type { WorkersAiBinding } from "./workers-ai.ts";
 import { BODY_CHAR_CAP, mapPool, readLimitedText, USER_AGENT } from "./http.ts";
 import { logError, logInfo } from "./log.ts";
 import { formatTelegramMessage } from "./format.ts";
@@ -31,6 +32,7 @@ export async function runPipeline(deps: {
   fetchImpl?: typeof fetch;
   now?: () => number;
   analyze?: typeof analyzeItem;
+  ai?: WorkersAiBinding;
   sleep?: (ms: number) => Promise<void>;
 }): Promise<RunReport> {
   const fetchImpl = deps.fetchImpl ?? fetch;
@@ -114,6 +116,8 @@ export async function runPipeline(deps: {
         apiKey: config.geminiApiKey,
         model: config.geminiModel,
         fallbackModel: config.geminiFallbackModel,
+        workersAiModel: config.workersAiModel,
+        ai: deps.ai,
         fetchImpl,
       });
     } catch (error) {
@@ -129,8 +133,8 @@ export async function runPipeline(deps: {
     if (!result.ok) {
       if (result.reason === "rejected") {
         report.rejected += 1;
-        toRemember.push(item.id);
-        logInfo({ message: "rejected_output", id: item.id, source: item.source });
+        if (result.remember) toRemember.push(item.id);
+        logInfo({ message: "rejected_output", id: item.id, source: item.source, remember: result.remember });
       } else {
         report.errors += 1;
         logError({ message: "analyze_skipped", id: item.id, reason: result.reason });
@@ -178,7 +182,13 @@ export async function runPipeline(deps: {
       recipients,
       fetchImpl,
       sleep: deps.sleep,
-      logContext: { id: item.id, source: item.source, category: category.id, importance: result.analysis.importance },
+      logContext: {
+        id: item.id,
+        source: item.source,
+        category: category.id,
+        importance: result.analysis.importance,
+        model: result.model,
+      },
     });
     for (const chatId of delivery.blocked) {
       if (subscribers[chatId] !== undefined) {

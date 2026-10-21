@@ -41,6 +41,7 @@ export default {
     try {
       const report = await runPipeline({
         config: parseConfig(env),
+        ai: env.AI,
         kv: {
           get: (key) => env.NEWS_KV.get(key),
           put: (key, value) => env.NEWS_KV.put(key, value),

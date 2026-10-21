@@ -17,20 +17,22 @@
   "triggers": {
     "crons": ["*/5 * * * *"]
   },
-  // Placeholder. Create a namespace and paste the real id before deploy:
-  // npx wrangler kv namespace create NEWS_KV
   "kv_namespaces": [
     {
       "binding": "NEWS_KV",
-      "id": "00000000000000000000000000000000"
+      "id": "1c14e28c5aad45ad8c8d388e441cee52"
     }
   ],
+  "ai": {
+    "binding": "AI"
+  },
   "vars": {
-    "DRY_RUN": "true",
+    "DRY_RUN": "false",
     "IMPORTANCE_THRESHOLD": "4",
     "DISCLAIMER": "למידע בלבד. אין כאן המלצה לפעולה בשוק.",
     "GEMINI_MODEL": "gemini-3.8-flash",
     "GEMINI_FALLBACK_MODEL": "gemini-3.5-flash-lite",
+    "WORKERS_AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     "MAX_ITEMS_PER_RUN": "5",
     "MAX_PER_CATEGORY": "2",
     "MAX_ITEMS_PER_FEED": "4",

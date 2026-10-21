@@ -25,6 +25,7 @@ function rss(items: Array<{ title: string; id: string; when: string }>): string 
 function hebrew(title: string): AnalyzeResult {
   return {
     ok: true,
+    model: "test-model",
     analysis: {
       importance: title.includes("minor") ? 2 : 5,
       category: "",
@@ -182,5 +183,46 @@ describe("runPipeline", () => {
     expect(chats).toEqual(["111", "222", "333"]);
     const stored = JSON.parse((await kv.get("subscribers:v1")) ?? "{}") as Record<string, number>;
     expect(Object.keys(stored).sort()).toEqual(["111", "333"]);
+  });
+
+  it("leaves an item unseen when Gemini and Workers AI all fail, so the next run retries it", async () => {
+    const kv = new MemoryKv();
+    let geminiCalls = 0;
+    let aiCalls = 0;
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.includes("generativelanguage.googleapis.com")) {
+        geminiCalls += 1;
+        return new Response("unavailable", { status: 503 });
+      }
+      return new Response(rss([{ title: "Fed holds", id: "fed-1", when: "Wed, 21 Oct 2026 15:00:00 GMT" }]));
+    };
+    const ai = {
+      run: async () => {
+        aiCalls += 1;
+        throw new Error("workers ai timeout");
+      },
+    };
+    const config = parseConfig({
+      FEEDS: JSON.stringify([{ name: "Fed", url: "https://example.com/fed.xml", category: "central-banks" }]),
+      DRY_RUN: "true",
+      GEMINI_API_KEY: "test-key",
+      FEEDS_PER_RUN: "0",
+      MAX_AGE_HOURS: "18",
+    });
+
+    const first = await runPipeline({ config, kv, fetchImpl, now: () => NOW, ai });
+    expect(first.posted).toBe(0);
+    expect(first.dryRun).toBe(0);
+    expect(first.errors).toBe(1);
+    expect(geminiCalls).toBe(2);
+    expect(aiCalls).toBe(1);
+    expect(await kv.get("seen:dry-run:v1")).toBeNull();
+
+    const second = await runPipeline({ config, kv, fetchImpl, now: () => NOW, ai });
+    expect(second.errors).toBe(1);
+    expect(geminiCalls).toBe(4);
+    expect(aiCalls).toBe(2);
+    expect(await kv.get("seen:dry-run:v1")).toBeNull();
   });
 });

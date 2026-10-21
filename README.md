@@ -4,7 +4,7 @@ A Cloudflare Worker that watches public finance RSS feeds and sends the stories 
 
 It covers the whole market, not a crypto feed with a few other headlines mixed in: stocks, capital markets, bonds and yields, earnings, the Fed and other central banks, CPI and jobs, commodities, currencies (including the shekel), Israel, IPOs, mergers, regulation, housing, trade and tariffs, big tech, and banks.
 
-`DRY_RUN` defaults to `true`. Until you turn it off, the worker logs each Hebrew news message and does not send it to subscribers. `/start`, `/stop`, and `/help` still reply, so people can subscribe while you check the logs. No API keys live in the repo.
+The worker deployed from this repo is **live**: `wrangler.jsonc` sets `DRY_RUN` to `false`, so each accepted story is sent to subscribers. A missing `DRY_RUN` value still means dry-run, which is what the tests use. For local `wrangler dev`, copy `.dev.vars.example` and set `DRY_RUN=true` if you do not want to message people. `/start`, `/stop`, and `/help` always reply. No API keys live in the repo.
 
 ## Architecture
 
@@ -18,7 +18,7 @@ flowchart TD
   pick --> rss[Fetch public RSS]
   rss --> parse[Parse, drop old items, drop items already in KV]
   parse --> balance[Round-robin by category]
-  balance --> gemini[Gemini scores impact and writes simple Hebrew]
+  balance --> gemini[Gemini, then Workers AI if Gemini is down]
   gemini --> gate{Score at least the threshold and the text is Hebrew?}
   gate -->|no| kv[Remember the id in one KV key]
   gate -->|yes| msg[Format with category emoji and tag]
@@ -33,6 +33,8 @@ flowchart TD
 ```
 
 Gemini is called with `gemini-3.8-flash`. If the reply is not usable Hebrew, the worker asks again, then falls back to `gemini-3.5-flash-lite`. A Fed story is not retagged as crypto unless the text is actually about crypto.
+
+If both of those calls fail with HTTP 429, a 5xx response, or a timeout, the worker asks Workers AI (`WORKERS_AI_MODEL`, default `@cf/meta/llama-3.3-70b-instruct-fp8-fast`, Llama 3.3 70B instruct). That model is the current Llama flagship on Workers AI and is large enough for everyday Hebrew. The smaller Llama 3.2 instruct models are multilingual but too small to trust for this. The same JSON schema and Hebrew checks apply. Output that fails those checks is not sent, and the item is not marked seen. When every model fails, the item is also left unseen, so a later cron retries it while it is still inside `MAX_AGE_HOURS`. Each accepted analysis logs the model id that wrote it.
 
 ## Why crypto does not crowd out other news
 
@@ -105,7 +107,7 @@ This is built for the Workers free plan and the Gemini free tier. It does not pr
 
 - One cron, `*/5 * * * *`. The free plan allows 5 cron triggers per account. CPU time on the free plan is 10 ms per cron; time spent waiting on RSS, Gemini, Telegram, and KV does not count. Bodies are capped and each feed keeps only a few items so parsing stays small.
 - One seen key (`seen:v1`, or `seen:dry-run:v1` while dry-run is on) and one subscriber key (`subscribers:v1`). A cron reads each once and writes only when the set changes. `/start` and `/stop` write the subscriber key when the set changes. The free plan allows 1,000 writes per day and one write per second to the same key. Seen ids expire after 72 hours.
-- At most 5 model calls per run by default, so a quiet day does not burn the Gemini quota. Transient model or Telegram errors are retried next cron. Output that never comes back in Hebrew is remembered so the same item is not scored forever. A Telegram 403 removes that subscriber and the item is still remembered.
+- At most 5 stories per run by default, so a quiet day does not burn the Gemini quota. A Gemini 429, 5xx, or timeout tries the fallback Gemini model and then one Workers AI call. If all of them fail, or Workers AI returns text that fails the Hebrew check, the story is not marked seen and the next cron tries again until it is older than `MAX_AGE_HOURS`. A Gemini reply that is not usable Hebrew, after the Hebrew retry, is remembered so the same bad draft is not scored forever. A Telegram 403 removes that subscriber and the item is still remembered. Workers AI has its own daily allowance and is not on the Gemini quota.
 - 50 subrequests per invocation on the free plan. Each news item is one `sendMessage` per subscriber, with a 40 ms gap (about 25 messages per second). A handful of subscribers fits next to the feed fetches. A long list does not fit in one free-plan cron. Feeds are fetched four at a time because the free plan allows 6 simultaneous outgoing connections.
 
 ## Setup
@@ -119,7 +121,7 @@ cp .dev.vars.example .dev.vars
 npx wrangler kv namespace create NEWS_KV
 ```
 
-Paste the printed namespace id over the placeholder in `wrangler.jsonc`. The id in git (`0000…`) is not a real namespace.
+`NEWS_KV` in `wrangler.jsonc` is the production namespace `1c14e28c5aad45ad8c8d388e441cee52`. Do not replace it with a placeholder.
 
 `TELEGRAM_CHAT_ID` is optional. Set it to your own numeric chat id, or an `@username`, if you also want every item copied there.
 
@@ -157,7 +159,7 @@ npm run telegram:setup
 
 That calls `setWebhook` with `secret_token`, then `setMyCommands` for `/start`, `/stop`, and `/help`.
 
-Leave `DRY_RUN` as `"true"` until the logged Hebrew looks right. Subscribers can already join. Then set `DRY_RUN` to `"false"` in `wrangler.jsonc` and deploy again. Dry-run dedupe is stored separately, so turning the flag off does not suppress stories you only logged.
+`DRY_RUN` in `wrangler.jsonc` is `"false"` because this bot is already live. A deploy from `main` keeps sending. Set it back to `"true"` and deploy only when you want to pause delivery. Dry-run dedupe is stored separately, so turning the flag off does not suppress stories you only logged.
 
 You can also add the three secrets in the dashboard (Workers & Pages → the worker → Settings → Variables and Secrets) before the first deploy.
 
@@ -165,11 +167,12 @@ You can also add the three secrets in the dashboard (Workers & Pages → the wor
 
 | Variable | Default | Role |
 | --- | --- | --- |
-| `DRY_RUN` | `true` | Log each news message instead of sending it. Command replies still go out |
+| `DRY_RUN` | `false` in `wrangler.jsonc` | Production sends. Missing or empty still means log-only. Command replies always go out |
 | `IMPORTANCE_THRESHOLD` | `4` | Post only scores from 1–5 at or above this |
 | `DISCLAIMER` | short Hebrew sentence | Appended to every message. Empty string omits it |
 | `GEMINI_MODEL` | `gemini-3.8-flash` | Main model |
 | `GEMINI_FALLBACK_MODEL` | `gemini-3.5-flash-lite` | Used when the main model fails or will not answer in Hebrew |
+| `WORKERS_AI_MODEL` | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | Third model, only after both Gemini calls return 429, 5xx, or time out |
 | `MAX_ITEMS_PER_RUN` | `5` | Model calls per cron |
 | `MAX_PER_CATEGORY` | `2` | Cap per topic when several topics have news |
 | `MAX_ITEMS_PER_FEED` | `4` | Items parsed from the top of each feed |
@@ -182,7 +185,8 @@ You can also add the three secrets in the dashboard (Workers & Pages → the wor
 | `TELEGRAM_BOT_TOKEN` | secret | Bot token from BotFather |
 | `TELEGRAM_WEBHOOK_SECRET` | secret | Shared secret for `X-Telegram-Bot-Api-Secret-Token` |
 | `TELEGRAM_CHAT_ID` | empty | Optional admin chat. A numeric id or `@username`. Empty skips it |
-| `NEWS_KV` | KV binding | Seen items and the subscriber set |
+| `NEWS_KV` | KV binding `1c14e28c5aad45ad8c8d388e441cee52` | Seen items and the subscriber set |
+| `AI` | Workers AI binding | Llama fallback. No API key |
 
 Secrets are declared in `wrangler.jsonc` under `secrets.required` and are not given values in git. `TELEGRAM_CHAT_ID` is a var, not a required secret.
 

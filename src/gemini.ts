@@ -1,6 +1,8 @@
 import { sanitizeAnalysis } from "./hebrew.ts";
+import { logError, logInfo } from "./log.ts";
 import { IMPORTANCE_RUBRIC } from "./scoring.ts";
 import type { Analysis, Category, GlossaryEntry, NewsItem } from "./types.ts";
+import { DEFAULT_WORKERS_AI_MODEL, runWorkersAi, type WorkersAiBinding } from "./workers-ai.ts";
 
 export class GeminiError extends Error {
   readonly status: number;
@@ -13,7 +15,7 @@ export class GeminiError extends Error {
 }
 
 export type AnalyzeResult =
-  | { ok: true; analysis: Analysis }
+  | { ok: true; analysis: Analysis; model: string }
   | { ok: false; remember: boolean; reason: "auth" | "rate_limited" | "rejected" | "transport" };
 
 export const HEBREW_RETRY_NOTE =
@@ -112,50 +114,152 @@ export function parseAnalysis(text: string): Analysis | null {
   };
 }
 
+type GeminiAttempt =
+  | { ok: true; analysis: Analysis }
+  | { ok: false; kind: "invalid" }
+  | { ok: false; kind: "auth" }
+  | { ok: false; kind: "retryable"; status: number };
+
 export async function analyzeItem(args: {
   item: NewsItem;
   categories: readonly Category[];
   apiKey: string;
   model: string;
   fallbackModel: string;
+  workersAiModel?: string;
+  ai?: WorkersAiBinding;
   fetchImpl?: typeof fetch;
 }): Promise<AnalyzeResult> {
   const fetchImpl = args.fetchImpl ?? fetch;
   const system = buildSystemInstruction(args.categories);
-  const attempts = [
-    { model: args.model, remind: false },
-    { model: args.model, remind: true },
-    { model: args.fallbackModel, remind: true },
-  ];
-  let sawRejection = false;
-  for (const attempt of attempts) {
-    try {
-      const text = await generateFlexible({
-        model: attempt.model,
-        apiKey: args.apiKey,
-        system,
-        user: buildUserPrompt(args.item, attempt.remind),
-        fetchImpl,
-      });
-      const parsed = parseAnalysis(text);
-      const clean = parsed ? sanitizeAnalysis(parsed) : null;
-      if (!clean) {
-        sawRejection = true;
-        continue;
-      }
-      return { ok: true, analysis: clean };
-    } catch (error) {
-      if (error instanceof GeminiError && (error.status === 401 || error.status === 403)) {
-        return { ok: false, remember: false, reason: "auth" };
-      }
-      if (error instanceof GeminiError && error.status === 429) {
-        return { ok: false, remember: false, reason: "rate_limited" };
-      }
-    }
+  const workersModel = args.workersAiModel?.trim() || DEFAULT_WORKERS_AI_MODEL;
+
+  const once = (model: string, remind: boolean) =>
+    geminiOnce({
+      model,
+      apiKey: args.apiKey,
+      system,
+      user: buildUserPrompt(args.item, remind),
+      fetchImpl,
+    });
+
+  const primary = await once(args.model, false);
+  if (primary.ok) return produced(args.item, args.model, primary.analysis);
+  if (primary.kind === "auth") return { ok: false, remember: false, reason: "auth" };
+
+  if (primary.kind === "invalid") {
+    return finishQualityPath(once, args.model, args.fallbackModel, args.item);
   }
-  return sawRejection
-    ? { ok: false, remember: true, reason: "rejected" }
-    : { ok: false, remember: false, reason: "transport" };
+
+  const secondary = await once(args.fallbackModel, false);
+  if (secondary.ok) return produced(args.item, args.fallbackModel, secondary.analysis);
+  if (secondary.kind === "auth") return { ok: false, remember: false, reason: "auth" };
+  if (secondary.kind === "invalid") {
+    const reminded = await once(args.fallbackModel, true);
+    if (reminded.ok) return produced(args.item, args.fallbackModel, reminded.analysis);
+    if (reminded.kind === "auth") return { ok: false, remember: false, reason: "auth" };
+    if (reminded.kind === "invalid") return { ok: false, remember: true, reason: "rejected" };
+    return { ok: false, remember: true, reason: "rejected" };
+  }
+
+  logInfo({
+    message: "workers_ai_fallback",
+    id: args.item.id,
+    model: workersModel,
+    primaryStatus: primary.status,
+    fallbackStatus: secondary.status,
+  });
+  return completeWithWorkersAi({
+    ai: args.ai,
+    model: workersModel,
+    system,
+    user: buildUserPrompt(args.item, true),
+    item: args.item,
+    rateLimited: primary.status === 429 && secondary.status === 429,
+  });
+}
+
+async function finishQualityPath(
+  once: (model: string, remind: boolean) => Promise<GeminiAttempt>,
+  model: string,
+  fallbackModel: string,
+  item: NewsItem,
+): Promise<AnalyzeResult> {
+  const reminded = await once(model, true);
+  if (reminded.ok) return produced(item, model, reminded.analysis);
+  if (reminded.kind === "auth") return { ok: false, remember: false, reason: "auth" };
+
+  const fallback = await once(fallbackModel, true);
+  if (fallback.ok) return produced(item, fallbackModel, fallback.analysis);
+  if (fallback.kind === "auth") return { ok: false, remember: false, reason: "auth" };
+  return { ok: false, remember: true, reason: "rejected" };
+}
+
+async function completeWithWorkersAi(args: {
+  ai: WorkersAiBinding | undefined;
+  model: string;
+  system: string;
+  user: string;
+  item: NewsItem;
+  rateLimited: boolean;
+}): Promise<AnalyzeResult> {
+  if (!args.ai) {
+    logError({ message: "workers_ai_unavailable", id: args.item.id, model: args.model });
+    return { ok: false, remember: false, reason: args.rateLimited ? "rate_limited" : "transport" };
+  }
+  let text = "";
+  try {
+    text = await runWorkersAi({ ai: args.ai, model: args.model, system: args.system, user: args.user });
+  } catch (error) {
+    logError({
+      message: "workers_ai_failed",
+      id: args.item.id,
+      model: args.model,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { ok: false, remember: false, reason: args.rateLimited ? "rate_limited" : "transport" };
+  }
+  const parsed = text ? parseAnalysis(text) : null;
+  const clean = parsed ? sanitizeAnalysis(parsed) : null;
+  if (!clean) {
+    logError({ message: "workers_ai_invalid", id: args.item.id, model: args.model });
+    return { ok: false, remember: false, reason: "rejected" };
+  }
+  return produced(args.item, args.model, clean);
+}
+
+function produced(item: NewsItem, model: string, analysis: Analysis): AnalyzeResult {
+  logInfo({ message: "analysis_produced", id: item.id, source: item.source, model });
+  return { ok: true, analysis, model };
+}
+
+async function geminiOnce(args: {
+  model: string;
+  apiKey: string;
+  system: string;
+  user: string;
+  fetchImpl: typeof fetch;
+}): Promise<GeminiAttempt> {
+  try {
+    const text = await generateFlexible(args);
+    const parsed = parseAnalysis(text);
+    const clean = parsed ? sanitizeAnalysis(parsed) : null;
+    if (!clean) return { ok: false, kind: "invalid" };
+    return { ok: true, analysis: clean };
+  } catch (error) {
+    if (error instanceof GeminiError && (error.status === 401 || error.status === 403)) {
+      return { ok: false, kind: "auth" };
+    }
+    const status = error instanceof GeminiError ? error.status : 0;
+    if (status === 429 || status >= 500 || status === 0 || isTimeout(error)) {
+      return { ok: false, kind: "retryable", status };
+    }
+    return { ok: false, kind: "retryable", status: 0 };
+  }
+}
+
+function isTimeout(error: unknown): boolean {
+  return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
 }
 
 async function generateFlexible(args: {
