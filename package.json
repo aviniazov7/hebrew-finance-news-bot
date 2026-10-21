@@ -2,7 +2,7 @@
   "name": "hebrew-finance-news-bot",
   "version": "0.1.0",
   "private": true,
-  "description": "Telegram channel bot that posts global finance news in simple Hebrew.",
+  "description": "Telegram bot that sends global finance news in simple Hebrew to subscribers.",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -11,6 +11,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "samples": "node --experimental-strip-types scripts/print-samples.ts",
+    "telegram:setup": "node --experimental-strip-types scripts/set-telegram-webhook.ts",
     "typecheck": "tsc --noEmit",
     "cf-typegen": "wrangler types",
     "test": "vitest run",

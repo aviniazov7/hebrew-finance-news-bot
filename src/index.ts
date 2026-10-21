@@ -1,10 +1,23 @@
 import { parseConfig } from "./config.ts";
 import { logError, logInfo } from "./log.ts";
 import { runPipeline } from "./pipeline.ts";
+import { handleTelegramWebhook } from "./webhook.ts";
 
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === "/telegram/webhook") {
+      const config = parseConfig(env);
+      return handleTelegramWebhook({
+        request,
+        webhookSecret: env.TELEGRAM_WEBHOOK_SECRET,
+        botToken: config.telegramBotToken,
+        kv: {
+          get: (key) => env.NEWS_KV.get(key),
+          put: (key, value) => env.NEWS_KV.put(key, value),
+        },
+      });
+    }
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
       const config = parseConfig(env);
       return Response.json({

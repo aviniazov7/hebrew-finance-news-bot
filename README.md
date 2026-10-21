@@ -1,15 +1,19 @@
 # Hebrew Finance News Bot
 
-A Cloudflare Worker that watches public finance RSS feeds and posts the stories that matter to a Telegram channel, in plain Hebrew. Each message has a short summary, one line on what it may mean for markets, a short list of what the news can affect, and a glossary for jargon such as “hedge fund”, “CPI”, or “rate cut”.
+A Cloudflare Worker that watches public finance RSS feeds and sends the stories that matter to Telegram subscribers, in plain Hebrew. Anyone can open the bot and send `/start`. Each message has a short summary, one line on what it may mean for markets, a short list of what the news can affect, and a glossary for jargon such as “hedge fund”, “CPI”, or “rate cut”.
 
 It covers the whole market, not a crypto feed with a few other headlines mixed in: stocks, capital markets, bonds and yields, earnings, the Fed and other central banks, CPI and jobs, commodities, currencies (including the shekel), Israel, IPOs, mergers, regulation, housing, trade and tariffs, big tech, and banks.
 
-`DRY_RUN` defaults to `true`. Until you turn it off, the worker logs the Hebrew message and does not call Telegram. No API keys live in the repo.
+`DRY_RUN` defaults to `true`. Until you turn it off, the worker logs each Hebrew news message and does not send it to subscribers. `/start`, `/stop`, and `/help` still reply, so people can subscribe while you check the logs. No API keys live in the repo.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
+  user["/start in Telegram"] --> hook["POST /telegram/webhook"]
+  hook --> secret{Secret header matches?}
+  secret -->|no| deny[401]
+  secret -->|yes| sub[Store the chat id in KV]
   cron[Cron every 5 minutes] --> pick[Priority feeds plus a rotating window]
   pick --> rss[Fetch public RSS]
   rss --> parse[Parse, drop old items, drop items already in KV]
@@ -20,14 +24,17 @@ flowchart TD
   gate -->|yes| msg[Format with category emoji and tag]
   msg --> dry{DRY_RUN?}
   dry -->|yes| log[Log the message]
-  dry -->|no| tg[Post to the Telegram channel]
+  dry -->|no| tg[Send to every subscriber]
+  tg --> blocked{Telegram 403?}
+  blocked -->|yes| drop[Remove that chat id]
+  blocked -->|no| kv
   log --> kv
-  tg --> kv
+  drop --> kv
 ```
 
 Gemini is called with `gemini-3.8-flash`. If the reply is not usable Hebrew, the worker asks again, then falls back to `gemini-3.5-flash-lite`. A Fed story is not retagged as crypto unless the text is actually about crypto.
 
-## Why crypto does not take over the channel
+## Why crypto does not crowd out other news
 
 Two separate limits do this:
 
@@ -97,24 +104,24 @@ The affects line always lists three to six concrete things in simple Hebrew, sep
 This is built for the Workers free plan and the Gemini free tier. It does not provision paid resources.
 
 - One cron, `*/5 * * * *`. The free plan allows 5 cron triggers per account. CPU time on the free plan is 10 ms per cron; time spent waiting on RSS, Gemini, Telegram, and KV does not count. Bodies are capped and each feed keeps only a few items so parsing stays small.
-- One KV key (`seen:v1`, or `seen:dry-run:v1` while dry-run is on) so a run costs one read and, only when the set changes, one write. The free plan allows 1,000 writes per day and one write per second to the same key. A five-minute cron is well under that. Ids expire after 72 hours.
-- At most 5 model calls per run by default, so a quiet day does not burn the Gemini quota. Transient model or Telegram errors are retried next cron. Output that never comes back in Hebrew is remembered so the same item is not scored forever.
-- 50 subrequests per invocation on the free plan. Fetching 12 feeds, then a handful of model and Telegram calls, stays under that cap. Feeds are fetched four at a time because the free plan allows 6 simultaneous outgoing connections.
+- One seen key (`seen:v1`, or `seen:dry-run:v1` while dry-run is on) and one subscriber key (`subscribers:v1`). A cron reads each once and writes only when the set changes. `/start` and `/stop` write the subscriber key when the set changes. The free plan allows 1,000 writes per day and one write per second to the same key. Seen ids expire after 72 hours.
+- At most 5 model calls per run by default, so a quiet day does not burn the Gemini quota. Transient model or Telegram errors are retried next cron. Output that never comes back in Hebrew is remembered so the same item is not scored forever. A Telegram 403 removes that subscriber and the item is still remembered.
+- 50 subrequests per invocation on the free plan. Each news item is one `sendMessage` per subscriber, with a 40 ms gap (about 25 messages per second). A handful of subscribers fits next to the feed fetches. A long list does not fit in one free-plan cron. Feeds are fetched four at a time because the free plan allows 6 simultaneous outgoing connections.
 
 ## Setup
 
-Requirements: Node 22, a Cloudflare account, a Gemini API key from Google AI Studio, and a Telegram bot that is an admin of the channel (with permission to post).
+Requirements: Node 22, a Cloudflare account, a Gemini API key from Google AI Studio, and a Telegram bot from [@BotFather](https://t.me/BotFather) (`/newbot`). People subscribe by sending `/start` to the bot. No channel admin permission is required.
 
 ```bash
 npm ci
 cp .dev.vars.example .dev.vars
-# fill GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, and TELEGRAM_CHANNEL_ID in .dev.vars
+# fill GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, and TELEGRAM_WEBHOOK_SECRET in .dev.vars
 npx wrangler kv namespace create NEWS_KV
 ```
 
 Paste the printed namespace id over the placeholder in `wrangler.jsonc`. The id in git (`0000…`) is not a real namespace.
 
-For a public channel, `TELEGRAM_CHANNEL_ID` is `@yourchannel`. Create the bot with [@BotFather](https://t.me/BotFather) (`/newbot`) and add it to the channel as an administrator that can post.
+`TELEGRAM_CHAT_ID` is optional. Set it to your own numeric chat id, or an `@username`, if you also want every item copied there.
 
 Local cron, still in dry-run:
 
@@ -133,11 +140,24 @@ Do this from your own machine when you are ready. `wrangler secret put` publishe
 npx wrangler deploy
 npx wrangler secret put GEMINI_API_KEY
 npx wrangler secret put TELEGRAM_BOT_TOKEN
-npx wrangler secret put TELEGRAM_CHANNEL_ID
+npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
 npx wrangler tail
 ```
 
-Leave `DRY_RUN` as `"true"` until the logged Hebrew looks right. Then set `DRY_RUN` to `"false"` in `wrangler.jsonc` and deploy again. Dry-run dedupe is stored separately, so turning the flag off does not suppress stories you only logged.
+`wrangler secret put` publishes a Worker version. Put the same `TELEGRAM_WEBHOOK_SECRET` value in the setup command below. Telegram sends it on every webhook request as `X-Telegram-Bot-Api-Secret-Token`.
+
+After the worker is deployed, register the webhook and the Hebrew command menu. `WEBHOOK_URL` is the worker origin plus `/telegram/webhook`.
+
+```bash
+export TELEGRAM_BOT_TOKEN=...
+export TELEGRAM_WEBHOOK_SECRET=...
+export WEBHOOK_URL=https://hebrew-finance-news-bot.<account>.workers.dev/telegram/webhook
+npm run telegram:setup
+```
+
+That calls `setWebhook` with `secret_token`, then `setMyCommands` for `/start`, `/stop`, and `/help`.
+
+Leave `DRY_RUN` as `"true"` until the logged Hebrew looks right. Subscribers can already join. Then set `DRY_RUN` to `"false"` in `wrangler.jsonc` and deploy again. Dry-run dedupe is stored separately, so turning the flag off does not suppress stories you only logged.
 
 You can also add the three secrets in the dashboard (Workers & Pages → the worker → Settings → Variables and Secrets) before the first deploy.
 
@@ -145,7 +165,7 @@ You can also add the three secrets in the dashboard (Workers & Pages → the wor
 
 | Variable | Default | Role |
 | --- | --- | --- |
-| `DRY_RUN` | `true` | Log the Hebrew message instead of posting |
+| `DRY_RUN` | `true` | Log each news message instead of sending it. Command replies still go out |
 | `IMPORTANCE_THRESHOLD` | `4` | Post only scores from 1–5 at or above this |
 | `DISCLAIMER` | short Hebrew sentence | Appended to every message. Empty string omits it |
 | `GEMINI_MODEL` | `gemini-3.8-flash` | Main model |
@@ -160,9 +180,11 @@ You can also add the three secrets in the dashboard (Workers & Pages → the wor
 | `EXTRA_FEEDS` / `EXTRA_CATEGORIES` | empty | JSON arrays appended to the active lists |
 | `GEMINI_API_KEY` | secret | Gemini API key |
 | `TELEGRAM_BOT_TOKEN` | secret | Bot token from BotFather |
-| `TELEGRAM_CHANNEL_ID` | secret | `@channel` or `-100…` |
+| `TELEGRAM_WEBHOOK_SECRET` | secret | Shared secret for `X-Telegram-Bot-Api-Secret-Token` |
+| `TELEGRAM_CHAT_ID` | empty | Optional admin chat. A numeric id or `@username`. Empty skips it |
+| `NEWS_KV` | KV binding | Seen items and the subscriber set |
 
-Secrets are declared in `wrangler.jsonc` under `secrets.required` and are not given values in git.
+Secrets are declared in `wrangler.jsonc` under `secrets.required` and are not given values in git. `TELEGRAM_CHAT_ID` is a var, not a required secret.
 
 ## Tests
 
@@ -171,7 +193,7 @@ npm test
 npm run typecheck
 ```
 
-Vitest covers RSS and Atom parsing, KV dedupe, the Hebrew check, message formatting, category balance, and a dry-run of the pipeline with a fake model. GitHub Actions runs the same tests on Node 22.
+Vitest covers RSS and Atom parsing, KV dedupe, the Hebrew check, message formatting, category balance, subscribe and unsubscribe, broadcast pacing, 403 cleanup, and a dry-run of the pipeline with a fake model. GitHub Actions runs the same tests on Node 22.
 
 `npm run samples` prints the fixture messages below.
 
