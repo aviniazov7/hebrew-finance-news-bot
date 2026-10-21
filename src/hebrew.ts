@@ -1,5 +1,5 @@
 import { fallbackAffects } from "./affects.ts";
-import type { Analysis, GlossaryEntry } from "./types.ts";
+import type { Analysis } from "./types.ts";
 import { collapseWhitespace } from "./text.ts";
 
 const HEBREW_CHAR = /[\u0590-\u05FF]/g;
@@ -83,16 +83,5 @@ export function sanitizeAnalysis(analysis: Analysis): Analysis | null {
     return null;
   }
   if (containsInvestmentAdvice(`${headline}\n${summary}\n${marketMeaning}`)) return null;
-  const glossary = analysis.glossary.filter(keepGlossaryEntry).slice(0, 2);
-  return { ...analysis, headline, summary, marketMeaning, affects: validAffects(analysis.affects), glossary };
-}
-
-function keepGlossaryEntry(entry: GlossaryEntry): boolean {
-  const term = entry.term.trim();
-  const hebrew = entry.hebrew.trim();
-  const explanation = entry.explanation.trim();
-  if (!term || !hebrew || !explanation) return false;
-  if (!isPrimarilyHebrew(hebrew, { minHebrew: 2, minRatio: 0.5 })) return false;
-  if (!isPrimarilyHebrew(explanation, { minHebrew: 5, minRatio: 0.55 })) return false;
-  return !containsInvestmentAdvice(`${hebrew}\n${explanation}`);
+  return { ...analysis, headline, summary, marketMeaning, affects: validAffects(analysis.affects) };
 }

@@ -21,6 +21,8 @@ export async function sendTelegramText(args: {
   text: string;
   fetchImpl?: typeof fetch;
   preview?: boolean;
+  /** News uses HTML so the source name can be a link. Command replies stay plain text. */
+  parseMode?: "HTML";
 }): Promise<SendResult> {
   const fetchImpl = args.fetchImpl ?? fetch;
   let response: Response;
@@ -31,6 +33,7 @@ export async function sendTelegramText(args: {
       body: JSON.stringify({
         chat_id: args.chatId,
         text: args.text,
+        ...(args.parseMode ? { parse_mode: args.parseMode } : {}),
         link_preview_options: { is_disabled: args.preview === false },
       }),
       signal: AbortSignal.timeout(15_000),
@@ -77,6 +80,7 @@ export async function broadcastMessage(args: {
       chatId,
       text: args.text,
       fetchImpl: args.fetchImpl,
+      parseMode: "HTML",
     });
     if (result.ok) {
       sent += 1;

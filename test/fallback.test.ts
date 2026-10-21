@@ -20,7 +20,6 @@ const hebrewJson = JSON.stringify({
   summary: "הבנק המרכזי לא שינה את הריבית. ההחלטה הגיעה אחרי נתוני אינפלציה מתונים. אין כאן שינוי במדיניות.",
   marketMeaning: "ריבית ללא שינוי משאירה את עלות האשראי קרובה לרמה הנוכחית.",
   affects: ["משכנתאות", "הלוואות", "ריבית על פיקדונות", "שער הדולר"],
-  glossary: [],
 });
 
 function geminiResponse(status: number, body = "no"): Response {
