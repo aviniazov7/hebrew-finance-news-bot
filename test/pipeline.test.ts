@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config.ts";
+import { DRY_RUN_SEEN_KEY } from "../src/dedupe.ts";
 import type { AnalyzeResult } from "../src/gemini.ts";
 import { runPipeline } from "../src/pipeline.ts";
 import type { NewsItem } from "../src/types.ts";
@@ -224,5 +225,97 @@ describe("runPipeline", () => {
     expect(geminiCalls).toBe(4);
     expect(aiCalls).toBe(2);
     expect(await kv.get("seen:dry-run:v1")).toBeNull();
+  });
+
+  it("does not fetch feeds when the model key or the live bot token is missing", async () => {
+    let fetches = 0;
+    const fetchImpl: typeof fetch = async () => {
+      fetches += 1;
+      return new Response("no");
+    };
+    const noKey = await runPipeline({
+      config: parseConfig({ DRY_RUN: "true", GEMINI_API_KEY: "  ", FEEDS_PER_RUN: "0" }),
+      kv: new MemoryKv(),
+      fetchImpl,
+      now: () => NOW,
+    });
+    expect(noKey.errors).toBe(1);
+    expect(noKey.feedsConsidered).toBe(0);
+
+    const noToken = await runPipeline({
+      config: parseConfig({
+        DRY_RUN: "false",
+        GEMINI_API_KEY: "test-key",
+        TELEGRAM_BOT_TOKEN: "",
+        FEEDS: JSON.stringify([{ name: "CNBC", url: "https://example.com/stocks.xml", category: "stocks" }]),
+        FEEDS_PER_RUN: "0",
+      }),
+      kv: new MemoryKv(),
+      fetchImpl,
+      now: () => NOW,
+    });
+    expect(noToken.errors).toBe(1);
+    expect(fetches).toBe(0);
+  });
+
+  it("stops the run on a rate limit and leaves the later story unseen", async () => {
+    const kv = new MemoryKv();
+    const scored: string[] = [];
+    const fetchImpl: typeof fetch = async () =>
+      new Response(
+        rss([
+          { title: "later story", id: "later", when: "Wed, 21 Oct 2026 15:30:00 GMT" },
+          { title: "earlier story", id: "earlier", when: "Wed, 21 Oct 2026 14:00:00 GMT" },
+        ]),
+      );
+    const config = parseConfig({
+      FEEDS: JSON.stringify([{ name: "CNBC", url: "https://example.com/stocks.xml", category: "stocks" }]),
+      DRY_RUN: "true",
+      GEMINI_API_KEY: "test-key",
+      FEEDS_PER_RUN: "0",
+      MAX_PER_CATEGORY: "2",
+    });
+    const report = await runPipeline({
+      config,
+      kv,
+      fetchImpl,
+      now: () => NOW,
+      analyze: async (args) => {
+        scored.push(args.item.id);
+        return { ok: false, remember: false, reason: "rate_limited" };
+      },
+    });
+    expect(report.itemsSelected).toBe(2);
+    expect(report.errors).toBe(1);
+    expect(scored).toEqual(["CNBC:earlier"]);
+    expect(kv.writes).toBe(0);
+    expect(await kv.get(DRY_RUN_SEEN_KEY)).toBeNull();
+  });
+
+  it("remembers a rejected Hebrew draft so the next cron does not score it again", async () => {
+    const kv = new MemoryKv();
+    let calls = 0;
+    const fetchImpl: typeof fetch = async () =>
+      new Response(rss([{ title: "major event", id: "major", when: "Wed, 21 Oct 2026 15:00:00 GMT" }]));
+    const config = parseConfig({
+      FEEDS: JSON.stringify([{ name: "CNBC", url: "https://example.com/stocks.xml", category: "stocks" }]),
+      DRY_RUN: "true",
+      GEMINI_API_KEY: "test-key",
+      FEEDS_PER_RUN: "0",
+    });
+    const analyze = async (): Promise<AnalyzeResult> => {
+      calls += 1;
+      return { ok: false, remember: true, reason: "rejected" };
+    };
+    const first = await runPipeline({ config, kv, fetchImpl, now: () => NOW, analyze });
+    expect(first.rejected).toBe(1);
+    expect(first.dryRun).toBe(0);
+    const seen = JSON.parse((await kv.get(DRY_RUN_SEEN_KEY)) ?? "{}") as Record<string, number>;
+    expect(seen["CNBC:major"]).toBe(NOW);
+
+    const second = await runPipeline({ config, kv, fetchImpl, now: () => NOW, analyze });
+    expect(second.itemsSelected).toBe(0);
+    expect(second.rejected).toBe(0);
+    expect(calls).toBe(1);
   });
 });

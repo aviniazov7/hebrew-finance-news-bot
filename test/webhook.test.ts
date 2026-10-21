@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HELP_TEXT, STOP_TEXT, WELCOME_TEXT } from "../src/commands.ts";
+import { ALREADY_STOPPED_TEXT, HELP_TEXT, STOP_TEXT, UNKNOWN_COMMAND_TEXT, WELCOME_TEXT } from "../src/commands.ts";
 import { containsInvestmentAdvice, isPrimarilyHebrew } from "../src/hebrew.ts";
 import { SUBSCRIBERS_KEY } from "../src/subscribers.ts";
 import { handleTelegramWebhook, secretsMatch } from "../src/webhook.ts";
@@ -89,6 +89,30 @@ describe("telegram webhook", () => {
     expect(replies.at(-1)).toContain(STOP_TEXT);
     expect(isPrimarilyHebrew(STOP_TEXT)).toBe(true);
     expect(JSON.parse((await kv.get(SUBSCRIBERS_KEY)) ?? "{}")).toEqual({});
+  });
+
+  it("replies to an unknown command and to /stop when nobody is subscribed", async () => {
+    const kv = new MemoryKv();
+    const replies: string[] = [];
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      const body = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as { text?: string };
+      replies.push(body.text ?? "");
+      return new Response(JSON.stringify({ ok: true }));
+    };
+    const base = { webhookSecret: SECRET, botToken: "TOKEN", kv, fetchImpl };
+
+    const unknown = await handleTelegramWebhook({ ...base, request: post(update("/settings")) });
+    expect(unknown.status).toBe(200);
+    expect(replies).toEqual([UNKNOWN_COMMAND_TEXT]);
+    expect(isPrimarilyHebrew(UNKNOWN_COMMAND_TEXT)).toBe(true);
+    expect(kv.writes).toBe(0);
+
+    const stopped = await handleTelegramWebhook({ ...base, request: post(update("/stop")) });
+    expect(stopped.status).toBe(200);
+    expect(replies[1]).toBe(ALREADY_STOPPED_TEXT);
+    expect(isPrimarilyHebrew(ALREADY_STOPPED_TEXT)).toBe(true);
+    expect(kv.writes).toBe(0);
+    expect(await kv.get(SUBSCRIBERS_KEY)).toBeNull();
   });
 
   it("ignores ordinary chat text", async () => {
