@@ -1,100 +1,31 @@
 # Hebrew Finance News Bot
 
-[![CI](https://github.com/aviniazov7/hebrew-finance-news-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/aviniazov7/hebrew-finance-news-bot/actions/workflows/ci.yml)
 [![Tests](badges/tests.svg)](https://github.com/aviniazov7/hebrew-finance-news-bot/actions/workflows/ci.yml)
 [![Coverage](badges/coverage.svg)](https://github.com/aviniazov7/hebrew-finance-news-bot/actions/workflows/ci.yml)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 
-A Cloudflare Worker that watches public finance RSS feeds and sends the stories that matter to Telegram subscribers, in plain Hebrew. Anyone can open the bot and send `/start`. Each message has a short summary, one line on what it may mean for markets, and a line of hashtags for what the news can affect.
+**A Telegram bot that turns global market and crypto news into short Hebrew summaries with market impact, AI-powered.**
 
-It covers the whole market, not a crypto feed with a few other headlines mixed in: stocks, capital markets, bonds and yields, earnings, the Fed and other central banks, CPI and jobs, commodities, currencies (including the shekel), Israel, IPOs, mergers, regulation, housing, trade and tariffs, big tech, and banks.
+Public RSS in, a scored Hebrew digest out. A Cloudflare Worker cron reads the feeds, a three-model fallback chain writes the summary, a Hebrew-only validator rejects bad drafts, and Workers KV stops the same story from being sent twice.
 
-The worker deployed from this repo is **live**: `wrangler.jsonc` sets `DRY_RUN` to `false`, so each accepted story is sent to subscribers. A missing `DRY_RUN` value still means dry-run, which is what the tests use. For local `wrangler dev`, copy `.dev.vars.example` and set `DRY_RUN=true` if you do not want to message people. `/start`, `/stop`, and `/help` always reply. No API keys live in the repo.
+## Try it
 
-## Architecture
+The bot username is not stored in this repo. Until it is, the link below is a placeholder.
 
-```mermaid
-flowchart TD
-  user["/start in Telegram"] --> hook["POST /telegram/webhook"]
-  hook --> secret{Secret header matches?}
-  secret -->|no| deny[401]
-  secret -->|yes| sub[Store the chat id in KV]
-  cron[Cron every 5 minutes] --> pick[Priority feeds plus a rotating window]
-  pick --> rss[Fetch public RSS]
-  rss --> parse[Parse, drop old items, drop seen ids, URLs, and titles]
-  parse --> balance[Round-robin by category]
-  balance --> budget{Still inside the 45s budget?}
-  budget -->|no| done[Finish the run. Unseen stories wait for the next cron]
-  budget -->|yes| gemini[Gemini, then Workers AI if Gemini is down]
-  gemini --> gate{Score at least the threshold and the text is Hebrew?}
-  gate -->|no| hold[Remember rejected and low scores]
-  gate -->|yes| pending[Write a pending marker to KV]
-  pending --> msg[Format with category emoji and tag]
-  msg --> dry{DRY_RUN?}
-  dry -->|yes| log[Log the message]
-  dry -->|no| tg[Send to every subscriber]
-  tg --> blocked{Telegram 403?}
-  blocked -->|yes| drop[Remove that chat id]
-  blocked -->|no| seen[Save the seen id immediately]
-  log --> seen
-  drop --> seen
-  seen --> hold
-  hold --> done
-```
+**Try it:** [t.me/\<BOT_USERNAME\>](https://t.me/<BOT_USERNAME>)
 
-Gemini is called with `gemini-3.8-flash`. The call uses `fetch` as a free function bound to `globalThis`. Calling it as a method throws `Illegal invocation` in Workers and used to skip Gemini entirely. If the reply is not usable Hebrew, the worker asks again, then falls back to `gemini-3.5-flash-lite`. A Fed story is not retagged as crypto unless the text is actually about crypto.
+<!-- TODO: replace <BOT_USERNAME> with the BotFather username. It is not in the source or in wrangler config. -->
 
-Every prompt requires Hebrew only. Proper names are transliterated into Hebrew, the original English spelling may appear in parentheses, and tickers and numbers are allowed. Arabic script is rejected before a message is sent: Arabic (U+0600–U+06FF), Arabic Supplement (U+0750–U+077F), Arabic Extended-A (U+08A0–U+08FF), and the Arabic presentation forms (U+FB50–U+FDFF and U+FE70–U+FEFF). On that failure the worker asks the same model once more with a stricter instruction, then the next fallback model. Words that still contain Arabic letters are removed, and the Hebrew that remains is sent.
+Send `/start` to subscribe. `/stop` leaves. No channel admin permission is required.
 
-If both Gemini calls fail with HTTP 429, a 5xx response, or a timeout, the worker asks Workers AI (`WORKERS_AI_MODEL`, default `@cf/meta/llama-3.3-70b-instruct-fp8-fast`, Llama 3.3 70B instruct). That model is the current Llama flagship on Workers AI and is large enough for everyday Hebrew. The smaller Llama 3.2 instruct models are multilingual but too small to trust for this. The same JSON schema, Hebrew-only instruction, and Arabic-script check apply. Output that is not usable Hebrew, or that gives investment advice, is not sent, and that item is not marked seen. When every model fails, the item is also left unseen, so a later cron retries it while it is still inside `MAX_AGE_HOURS`. Each accepted analysis logs the model id that wrote it. Gemini errors are logged without the API key.
+## Demo
 
-Each Gemini request and each Workers AI request aborts after 18 seconds. The run stops starting another story once it has been going for 45 seconds, finishes the KV write, and returns. Stories that were not started stay unseen for a later cron. A story is also remembered by its normalized URL (fragment and tracking parameters such as `utm_*` removed) and by a hash of the normalized title, so the same article from Google News and from the publisher feed is posted once.
+<!-- TODO: add docs/demo.png — a screenshot of one Telegram message (Hebrew headline, short summary, market-impact line, hashtags). The file is not in the repo yet. -->
 
-## Why crypto does not crowd out other news
+`docs/demo.png` is reserved for that screenshot. It is not committed yet, so the image is not embedded here.
 
-Two separate limits do this:
-
-- **Scoring.** The prompt uses one 1–5 scale for every asset class. A loud token headline is not more important than a Fed decision, a CPI print, a large earnings surprise, or a move in the shekel. Only scores at or above `IMPORTANCE_THRESHOLD` (default **4**) are posted.
-- **Selection.** When more than one category has fresh items, each category can contribute at most `MAX_PER_CATEGORY` items (default **2**) to that run. CoinDesk and Cointelegraph share the single `crypto` category, so a backlog of token stories cannot fill the Gemini quota. On a quiet day, if only one category has news, it may use the full `MAX_ITEMS_PER_RUN` (default **5**).
-
-## Categories and sources
-
-The emoji is the topic, not a green or red arrow. Defaults live in `src/catalog.ts`. Replace them with `FEEDS` / `CATEGORIES`, or append with `EXTRA_FEEDS` / `EXTRA_CATEGORIES`.
-
-| Category | Tag | Default sources |
-| --- | --- | --- |
-| Crypto | ₿ קריפטו | CoinDesk, Cointelegraph |
-| Stocks | 📈 מניות | CNBC Finance |
-| Capital markets | 📰 שוקי הון | MarketWatch top stories |
-| Bonds and yields | 💵 אג״ח | Google News search for Treasury and government-bond yields |
-| Earnings | 📊 דוחות | CNBC Earnings |
-| Central banks | 🏦 בנק מרכזי | Federal Reserve, ECB, and Bank of England press RSS |
-| Macro data | 📋 מאקרו | CNBC Economy, plus a Google News search for CPI and the jobs report |
-| Commodities | 🛢️ סחורות | CNBC Energy, plus a Google News search for gold, silver, crude, and natural gas |
-| Currencies | 💱 מט״ח | Google News search for the dollar, EUR/USD, and the shekel |
-| Israel | 🇮🇱 ישראל | Globes capital-markets RSS, plus a Google News search for the Bank of Israel and the TASE |
-| IPOs | 🔔 הנפקות | Google News search for IPO filings and pricing |
-| Mergers | 🤝 מיזוגים | Google News search for merger agreements and takeover bids |
-| Regulation | ⚖️ רגולציה | SEC press releases |
-| Housing | 🏠 נדל״ן | CNBC Real Estate |
-| Trade and geopolitics | 🌍 סחר ועולם | Google News search for tariffs, trade wars, and sanctions |
-| Tech and AI | 🤖 טק ו-AI | CNBC Tech |
-| Banks and fintech | 🏛️ בנקים | Google News search for bank earnings, fintech, and investment banking |
-
-Feeds were checked in October 2026. The Bureau of Labor Statistics blocks anonymous RSS clients, and the Bank of Israel site does not expose a working public feed, so CPI, jobs, and Israeli policy use the publisher and Google News sources above. Google News is a headline aggregator (Reuters and others), used only where a stable publisher feed was not available. Priority wires (Fed, ECB, Bank of England, SEC, CPI/jobs, Globes) are fetched on every run. The other feeds rotate, 12 URLs per run by default, so a five-minute cron stays inside the free-plan subrequest cap. A story missed on one pass is still inside the 18-hour age window.
-
-Add a topic without editing code:
-
-```json
-[{"id":"private-credit","emoji":"🏦","labelHe":"אשראי פרטי","labelEn":"Private credit"}]
-```
-
-```json
-[{"name":"Private credit","url":"https://news.google.com/rss/search?q=%22private%20credit%22&hl=en-US&gl=US&ceid=US:en","category":"private-credit"}]
-```
-
-Put the first document in `EXTRA_CATEGORIES` and the second in `EXTRA_FEEDS`.
-
-## Message format
+Until then, this is the shape of every message (`formatTelegramMessage`):
 
 ```text
 📈 מניות · כותרת בעברית
@@ -103,101 +34,113 @@ Put the first document in `EXTRA_CATEGORIES` and the second in `EXTRA_FEEDS`.
 
 מה זה אומר לשוק: משפט אחד על התגובה האפשרית של השוק.
 
-🎯 על מה זה משפיע: #משכנתאות #הלוואות #ריבית_על_פיקדונות #מניות_צמיחה_וטק
+🎯 על מה זה משפיע: #משכנתאות #הלוואות #ריבית_על_פיקדונות
 
 למידע בלבד. אין כאן המלצה לפעולה בשוק.
 ```
 
-The affects line lists three to six short Hebrew tag terms as Telegram hashtags. Spaces inside a term become underscores, and characters that would break a hashtag are removed. Gemini and Workers AI are asked for those short terms. The worker still sanitizes them before sending. If the model omits the list, or fewer than three terms pass the Hebrew check, the worker uses a built-in list for that category (a rate decision falls back to mortgages, loans, deposit rates, growth stocks, the dollar-shekel rate, and crypto). Topics added through config use a general list: stock indexes, government bonds, exchange rates, the cost of credit, and risk appetite. The source credit is the publisher name at the end of the summary, linked to the article in HTML. Section names such as “CNBC Tech” are shortened to “CNBC”. Telegram link preview stays on, so the article card still appears. The disclaimer is `DISCLAIMER`. The model is told not to recommend buying, selling, or investing, and a draft that does is discarded.
+The last line is `DISCLAIMER`. Drafts that tell the reader to buy, sell, or invest are dropped.
 
-## Free-tier shape
+## Features
 
-This is built for the Workers free plan and the Gemini free tier. It does not provision paid resources.
+- **Plain Hebrew.** Headline, two or three sentences, one line on how the market may react, three to six Hebrew hashtags, and a link to the source.
+- **The whole market.** Seventeen default topics: crypto, stocks, capital markets, bonds, earnings, central banks, macro data, commodities, currencies (including the shekel), Israel, IPOs, mergers, regulation, housing, trade, tech, and banks. Defaults live in `src/catalog.ts`.
+- **Crypto cannot crowd the run.** One 1–5 importance scale for every asset class. Only scores at or above `IMPORTANCE_THRESHOLD` are posted. When several topics have news, each topic is capped by `MAX_PER_CATEGORY`.
+- **Model fallback.** `gemini-3.8-flash`, then `gemini-3.5-flash-lite`, then Workers AI (`WORKERS_AI_MODEL`, default `@cf/meta/llama-3.3-70b-instruct-fp8-fast`) only after both Gemini calls return 429, 5xx, or time out. Each call aborts after 18 seconds.
+- **Hebrew-only validator.** Proper names are transliterated. Tickers and numbers stay. Arabic script is retried, then stripped. Unusable Hebrew is not sent and is not marked seen, so a later cron can retry it.
+- **KV dedup.** Seen id, normalized URL (tracking parameters removed), and a hash of the normalized title. A pending marker is written before send, so a cron killed mid-loop does not repost. Dry-run uses its own key.
+- **Subscribers.** `/start`, `/stop`, and `/help` over a secret-checked webhook. A Telegram 403 removes that chat. `TELEGRAM_CHAT_ID` optionally copies each item to one extra chat.
+- **Free-tier shaped.** One cron (`*/5 * * * *`), a 45-second budget per run, a rotating feed window, and at most `MAX_ITEMS_PER_RUN` model calls. An unset or empty `DRY_RUN` stays log-only.
 
-- One cron, `*/5 * * * *`. The free plan allows 5 cron triggers per account. CPU time on the free plan is 10 ms per cron; time spent waiting on RSS, Gemini, Telegram, and KV does not count. Bodies are capped and each feed keeps only a few items so parsing stays small.
-- One seen key (`seen:v1`, or `seen:dry-run:v1` while dry-run is on) and one subscriber key (`subscribers:v1`). A cron reads the seen key once. Each story that is about to be sent is written first as a pending marker, then written again after a successful send, so a run killed mid-loop does not post that story again. A Telegram error that returns normally clears the marker and the next cron retries it. Rejected stories and scores under the threshold are saved at the end of the run. `/start` and `/stop` write the subscriber key when the set changes. The free plan allows 1,000 writes per day and one write per second to the same key. The send sits between the two seen writes. Seen ids expire after 72 hours.
-- At most 5 stories per run by default, so a quiet day does not burn the Gemini quota. A Gemini 429, 5xx, or timeout tries the fallback Gemini model and then one Workers AI call. If all of them fail, or Workers AI returns text that fails the Hebrew check, the story is not marked seen and the next cron tries again until it is older than `MAX_AGE_HOURS`. A Gemini reply that is not usable Hebrew, after the Hebrew retry, is remembered so the same bad draft is not scored forever. A draft that is Hebrew but still contains Arabic script after the stricter retry and the next model is sent with those words removed. A Telegram 403 removes that subscriber and the item is still remembered. Workers AI has its own daily allowance and is not on the Gemini quota.
-- 50 subrequests per invocation on the free plan. Each news item is one `sendMessage` per subscriber, with a 40 ms gap (about 25 messages per second). A handful of subscribers fits next to the feed fetches. A long list does not fit in one free-plan cron. Feeds are fetched four at a time because the free plan allows 6 simultaneous outgoing connections.
+## Architecture
 
-## Setup
+```mermaid
+flowchart TD
+  rss["RSS feeds"] --> cron["Worker cron"]
+  cron --> seen{"Already in KV?"}
+  seen -->|yes| skip["Skip"]
+  seen -->|no| gemini["Gemini 3.8 Flash"]
+  gemini -->|error, timeout, or unusable Hebrew| lite["Gemini 3.5 Flash-Lite"]
+  lite -->|429, 5xx, or timeout on both Gemini calls| ai["Workers AI fallback"]
+  gemini --> validator["Hebrew-only validator"]
+  lite --> validator
+  ai --> validator
+  validator -->|reject| drop["Do not send"]
+  validator -->|pass| kv["KV dedup"]
+  kv --> tg["Telegram subscribers"]
+```
 
-Requirements: Node 22, a Cloudflare account, a Gemini API key from Google AI Studio, and a Telegram bot from [@BotFather](https://t.me/BotFather) (`/newbot`). People subscribe by sending `/start` to the bot. No channel admin permission is required.
+KV is checked before any model call, then written again around the send. Priority wires (Fed, ECB, Bank of England, SEC, CPI and jobs, Globes) are fetched every run. The other feeds rotate so a five-minute cron stays inside the free-plan subrequest cap.
+
+Add a topic without a code change by setting `EXTRA_CATEGORIES` and `EXTRA_FEEDS` to JSON arrays. `FEEDS` and `CATEGORIES` replace the defaults.
+
+## Tech stack
+
+| Piece | Choice |
+| --- | --- |
+| Language | TypeScript, strict, ESM |
+| Runtime | Cloudflare Workers, cron every 5 minutes |
+| Storage | Workers KV (`NEWS_KV`): seen stories and the subscriber set |
+| Models | Gemini 3.8 Flash, Gemini 3.5 Flash-Lite, Workers AI (Llama 3.3 70B) |
+| Delivery | Telegram Bot API, webhook plus `sendMessage` |
+| Tooling | Wrangler, Vitest, Node 22 |
+| CI | GitHub Actions: typecheck, `npm test`, coverage |
+
+Secrets required by `wrangler.jsonc`: `GEMINI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`. The Workers AI binding needs no key.
+
+## Quick start
+
+Self-host on your own Cloudflare account.
+
+Requirements: Node 22, a Cloudflare account, a Gemini API key from [Google AI Studio](https://aistudio.google.com/), and a bot from [@BotFather](https://t.me/BotFather).
 
 ```bash
 npm ci
 cp .dev.vars.example .dev.vars
-# fill GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, and TELEGRAM_WEBHOOK_SECRET in .dev.vars
 npx wrangler kv namespace create NEWS_KV
+npx wrangler dev
 ```
 
-`NEWS_KV` in `wrangler.jsonc` is the production namespace `1c14e28c5aad45ad8c8d388e441cee52`. Do not replace it with a placeholder.
+Put the new namespace id on the `NEWS_KV` binding in `wrangler.jsonc`. In `.dev.vars`, set names only — never commit that file:
 
-`TELEGRAM_CHAT_ID` is optional. Set it to your own numeric chat id, or an `@username`, if you also want every item copied there.
+| Name | Required | Role |
+| --- | --- | --- |
+| `GEMINI_API_KEY` | yes | Gemini |
+| `TELEGRAM_BOT_TOKEN` | yes | BotFather token |
+| `TELEGRAM_WEBHOOK_SECRET` | yes | Checked on `X-Telegram-Bot-Api-Secret-Token` |
+| `DRY_RUN` | local | `.dev.vars.example` keeps local runs from messaging people. The committed Worker config turns delivery on. Unset or empty stays log-only |
+| `TELEGRAM_CHAT_ID` | no | Extra admin chat. Empty skips it |
 
-Local cron, still in dry-run:
+Trigger a local cron (still log-only if `DRY_RUN` is unset or set as in the example file):
 
 ```bash
-npx wrangler dev
 curl "http://localhost:8787/cdn-cgi/local/scheduled?cron=*/5+*+*+*+*"
 ```
 
-`GET /health` returns `{ "ok": true, "dryRun": true }` and does not call Gemini.
+`GET /health` returns `{ "ok": true }` and does not call a model.
 
-## Deploy
+Other tunables, names only: `IMPORTANCE_THRESHOLD`, `GEMINI_MODEL`, `GEMINI_FALLBACK_MODEL`, `WORKERS_AI_MODEL`, `MAX_ITEMS_PER_RUN`, `MAX_PER_CATEGORY`, `MAX_AGE_HOURS`, `DEDUPE_TTL_HOURS`, `FEEDS_PER_RUN`, `FEEDS`, `EXTRA_FEEDS`, `CATEGORIES`, `EXTRA_CATEGORIES`, `DISCLAIMER`. Defaults are in `wrangler.jsonc`.
 
-Do this from your own machine when you are ready. `wrangler secret put` publishes a new Worker version.
+### Deploy your own worker
+
+`wrangler secret put` publishes a Worker version. Do this from your machine when you are ready.
 
 ```bash
-npx wrangler deploy
 npx wrangler secret put GEMINI_API_KEY
 npx wrangler secret put TELEGRAM_BOT_TOKEN
 npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
-npx wrangler tail
+npx wrangler deploy
 ```
 
-`wrangler secret put` publishes a Worker version. Put the same `TELEGRAM_WEBHOOK_SECRET` value in the setup command below. Telegram sends it on every webhook request as `X-Telegram-Bot-Api-Secret-Token`.
-
-After the worker is deployed, register the webhook and the Hebrew command menu. `WEBHOOK_URL` is the worker origin plus `/telegram/webhook`.
+Register the webhook and the Hebrew command menu. `WEBHOOK_URL` is the worker origin plus `/telegram/webhook`.
 
 ```bash
-export TELEGRAM_BOT_TOKEN=...
-export TELEGRAM_WEBHOOK_SECRET=...
-export WEBHOOK_URL=https://hebrew-finance-news-bot.<account>.workers.dev/telegram/webhook
 npm run telegram:setup
 ```
 
-That calls `setWebhook` with `secret_token`, then `setMyCommands` for `/start`, `/stop`, and `/help`.
+That script reads `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, and `WEBHOOK_URL`. It calls `setWebhook` with the secret, then `setMyCommands` for `/start`, `/stop`, and `/help`.
 
-`DRY_RUN` in `wrangler.jsonc` is `"false"` because this bot is already live. A deploy from `main` keeps sending. Set it back to `"true"` and deploy only when you want to pause delivery. Dry-run dedupe is stored separately, so turning the flag off does not suppress stories you only logged.
-
-You can also add the three secrets in the dashboard (Workers & Pages → the worker → Settings → Variables and Secrets) before the first deploy.
-
-## Configuration
-
-| Variable | Default | Role |
-| --- | --- | --- |
-| `DRY_RUN` | `false` in `wrangler.jsonc` | Production sends. Missing or empty still means log-only. Command replies always go out |
-| `IMPORTANCE_THRESHOLD` | `4` | Post only scores from 1–5 at or above this |
-| `DISCLAIMER` | short Hebrew sentence | Appended to every message. Empty string omits it |
-| `GEMINI_MODEL` | `gemini-3.8-flash` | Main model |
-| `GEMINI_FALLBACK_MODEL` | `gemini-3.5-flash-lite` | Used when the main model fails or will not answer in Hebrew |
-| `WORKERS_AI_MODEL` | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | Third model, only after both Gemini calls return 429, 5xx, or time out |
-| `MAX_ITEMS_PER_RUN` | `5` | Model calls per cron |
-| `MAX_PER_CATEGORY` | `2` | Cap per topic when several topics have news |
-| `MAX_ITEMS_PER_FEED` | `4` | Items parsed from the top of each feed |
-| `MAX_AGE_HOURS` | `18` | Ignore older items |
-| `DEDUPE_TTL_HOURS` | `72` | How long a seen id is remembered |
-| `FEEDS_PER_RUN` | `12` | URLs fetched per cron. `0` fetches every feed |
-| `FEEDS` / `CATEGORIES` | empty | JSON arrays that replace the defaults |
-| `EXTRA_FEEDS` / `EXTRA_CATEGORIES` | empty | JSON arrays appended to the active lists |
-| `GEMINI_API_KEY` | secret | Gemini API key |
-| `TELEGRAM_BOT_TOKEN` | secret | Bot token from BotFather |
-| `TELEGRAM_WEBHOOK_SECRET` | secret | Shared secret for `X-Telegram-Bot-Api-Secret-Token` |
-| `TELEGRAM_CHAT_ID` | empty | Optional admin chat. A numeric id or `@username`. Empty skips it |
-| `NEWS_KV` | KV binding `1c14e28c5aad45ad8c8d388e441cee52` | Seen items and the subscriber set |
-| `AI` | Workers AI binding | Llama fallback. No API key |
-
-Secrets are declared in `wrangler.jsonc` under `secrets.required` and are not given values in git. `TELEGRAM_CHAT_ID` is a var, not a required secret.
+The committed `DRY_RUN` value sends messages on deploy. Pause delivery by changing that var and deploying again. Dry-run dedupe is a separate KV key, so a rehearsal does not suppress a live story.
 
 ## Testing
 
@@ -207,259 +150,32 @@ npm run typecheck
 npm run test:coverage
 ```
 
-`npm test` runs Vitest. `npm run typecheck` is `tsc --noEmit`. `npm run test:coverage` repeats the suite with `@vitest/coverage-v8` and rewrites the tests and coverage badges above. The coverage badge is line coverage.
+`npm test` is Vitest. `npm run typecheck` is `tsc --noEmit`. `npm run test:coverage` repeats the suite with `@vitest/coverage-v8` and rewrites `badges/tests.svg` and `badges/coverage.svg`. The coverage badge is line coverage. CI fails if those badges drift.
 
-The suite covers:
+The suite covers RSS and Atom parsing, KV dedupe (including a killed cron), the Gemini → Flash-Lite → Workers AI chain, Hebrew and Arabic-script checks, advice rejection, and the webhook commands.
 
-- **Parsing.** RSS and Atom feeds, including CDATA, entities, dates, and Hebrew titles.
-- **Dedupe.** Seen ids in KV, written before the run returns so a killed cron does not repost, normalized URL and title fingerprints, the TTL, and a separate dry-run key so a rehearsal does not suppress a live story.
-- **Model fallback.** Gemini, then Gemini lite, then Workers AI. A draft that is not usable Hebrew is requested again from Gemini and, if that is still unusable, from Gemini lite. HTTP 429, a 5xx response, or a timeout on both Gemini calls is the only path to Workers AI. Each of those calls aborts after 18 seconds. An auth failure stops the chain. Text that still fails the Hebrew check is not sent.
-- **Hebrew output validation.** The headline, summary, and market line must be Hebrew. Arabic script is rejected, retried on the same model and the next fallback model, then stripped. Wording that tells the reader to buy, sell, or invest is dropped. An affects list keeps three to six Hebrew phrases.
-- **Gemini transport.** `fetch` is called as a free function. The default is bound to `globalThis`, and a stub that throws when `this` is set still reaches Gemini. Error logs include the Gemini message and never the API key.
-- **Subscriber commands.** `/start`, `/stop`, and `/help`, an unknown command, the webhook secret, and removal of a chat that blocks the bot.
+Every pull request runs typecheck, `npm test`, and coverage on Node 22. The same job runs on each push to `main`.
 
-Every pull request runs the tests before merge. The [CI workflow](https://github.com/aviniazov7/hebrew-finance-news-bot/actions/workflows/ci.yml) also runs on each push to `main`: Node 22, `npm ci`, typecheck, `npm test`, then the coverage run. The job prints a coverage summary, and the badges have to match that run.
+`npm run samples` prints fixture messages rendered by the real formatter. They are not a live model call.
 
-`npm run samples` prints the fixture messages below.
+## Roadmap
 
-## Fixture samples
+- Commit `docs/demo.png` and replace the `<BOT_USERNAME>` placeholder.
+- Per-subscriber topic filters. `/start` is all-or-nothing today.
+- A batched digest, so a longer subscriber list still fits the Workers free-plan subrequest cap.
+- More direct publisher feeds in place of the Google News searches.
+- Quiet hours around the Israel trading day.
+- A `LICENSE` file.
 
-These messages are **not** a live Gemini call and **not** live news. No `GEMINI_API_KEY` was available in the build environment. They are illustrative drafts rendered by `formatTelegramMessage`, the same function the worker uses. Regenerate them with `npm run samples`.
+## Contributing
 
-### Crypto
+Issues and pull requests are welcome.
 
-```text
-₿ קריפטו · ביטקוין נחלש אחרי אזהרת רגולציה בארה״ב
+1. Branch from `main`. Use a [conventional commit](https://www.conventionalcommits.org/) (`feat`, `fix`, `docs`, `refactor`, `test`, `chore`).
+2. Run `npm test` and `npm run typecheck`. If you change coverage output, run `npm run test:coverage` and commit the badge diff.
+3. Do not commit `.dev.vars`, tokens, or API keys. Env examples stay names only.
+4. Keep the change small. The Worker is built for the free plan: a new feed or a new model call needs a bound.
 
-רגולטור בארה״ב הודיע שיבדוק כמה בורסות קריפטו גדולות. ביטקוין ירד תוך שעות, ויחד איתו נחלשו גם מטבעות גדולים אחרים. בשלב הזה לא פורסם קנס ולא צו סגירה. — <a href="https://example.com/fixtures/crypto">CoinDesk</a>
+---
 
-מה זה אומר לשוק: כשיוצאת אזהרת רגולציה חדה, מחירי הקריפטו נוטים לזוז מהר, ולפעמים גם מניות של חברות שמחזיקות ביטקוין זזות איתם.
-
-🎯 על מה זה משפיע: #ביטקוין #מטבעות_גדולים #מניות_חברות_שמחזיקות_ביטקוין #קרנות_סל_על_ביטקוין #בורסות_קריפטו
-
-למידע בלבד. אין כאן המלצה לפעולה בשוק.
-```
-
-### Stocks
-
-```text
-📈 מניות · וול סטריט נסגרה בירידות אחרי דוחות מעורבים
-
-מדדי המניות הגדולים בארה״ב ירדו ביום מסחר שבו חלק מהחברות עקפו את תחזית הרווח וחלק פספסו. ירידות חדות יותר נראו במניות שבבים. לא פורסם אירוע חירום במסחר. — <a href="https://example.com/fixtures/stocks">CNBC</a>
-
-מה זה אומר לשוק: יום מעורב כזה בדרך כלל מגדיל את התנודות במדדים, בלי לשנות לבד את כיוון הריבית או את שוק האג״ח.
-
-🎯 על מה זה משפיע: #מדדי_וול_סטריט #מניות_שבבים #תחזיות_רווח #תנודתיות_במסחר #אג״ח
-
-למידע בלבד. אין כאן המלצה לפעולה בשוק.
-```
-
-### Capital markets
-
-```text
-📰 שוקי הון · שוקי ההון נערכים ליום מסחר תנודתי סביב החלטת ריבית
-
-סוחרים הזיזו כסף בין מניות לאג״ח לקראת החלטת הבנק המרכזי. מחזורי המסחר עלו כבר לפני ההודעה. אין עדיין החלטה רשמית. — <a href="https://example.com/fixtures/markets">MarketWatch</a>
-
-מה זה אומר לשוק: ככל שההחלטה מתקרבת, פערי המחירים בין קונים למוכרים יכולים להתרחב, ולכן תנועה חדה בשני הכיוונים אפשרית מיד אחרי ההודעה.
-
-🎯 על מה זה משפיע: #מניות #אג״ח #מרווחי_קנייה_ומכירה #מחזורי_מסחר #שערי_מטבע
-
-למידע בלבד. אין כאן המלצה לפעולה בשוק.
-```
-
-### Bonds
-
-```text
-💵 אג״ח · התשואה על אג״ח ממשלת ארה״ב לעשר שנים עלתה
-
-מחיר האג״ח הארוכות ירד, ולכן התשואה עליהן עלתה. העלייה הגיעה אחרי נתונים שהראו שהכלכלה עדיין חזקה. אג״ח קצרות יותר זזו פחות. — <a href="https://example.com/fixtures/bonds">Google News</a>
-
-מה זה אומר לשוק: תשואה גבוהה יותר על אג״ח ממשלתיות מייקרת את עלות הגיוס של ממשלות וחברות, ויכולה ללחוץ על מחירי מניות.
-
-🎯 על מה זה משפיע: #אג״ח_לעשר_שנים #עלות_גיוס_של_חברות #מחירי_מניות #ריבית_משכנתאות #שער_הדולר
-
-למידע בלבד. אין כאן המלצה לפעולה בשוק.
-```
-
-### Earnings
-
-```text
-📊 דוחות · ענקית טכנולוגיה עקפה את תחזית הרווח והזהירה מהוצאות גבוהות
-
-החברה דיווחה על רווח גבוה מהתחזית ברבעון האחרון. במקביל היא אמרה שתוציא יותר על תשתיות בשנה הקרובה. המניה זזה חזק אחרי הסגירה. — <a href="https://example.com/fixtures/earnings">CNBC</a>
-
-מה זה אומר לשוק: דוח כזה יכול למשוך את כל סקטור הטכנולוגיה, כי משקיעים מעדכנים לפיו את הציפיות גם מחברות דומות.
-
-🎯 על מה זה משפיע: #מניית_החברה #מניות_הטכנולוגיה #תחזיות_רווח #הוצאות_על_תשתיות #מדדי_המניות
-
-למידע בלבד. אין כאן המלצה לפעולה בשוק.
-```
-
-### Central banks
-
-```text
-🏦 בנק מרכזי · הפד הוריד את הריבית ברבע נקודת אחוז
-
-הבנק המרכזי של ארה״ב הוריד את הריבית ברבע נקודת אחוז. ההחלטה התקבלה אחרי שהאינפלציה התמתנה. זו הפעם השנייה השנה שהריבית יורדת. — <a href="https://example.com/fixtures/fed">Federal Reserve</a>
-
-מה זה אומר לשוק: הורדת ריבית כזו מוזילה בדרך כלל הלוואות חדשות, ויכולה לתמוך במניות ובאג״ח, או להחליש את הדולר אם השוק קורא בה סימן לחולשה.
-
-🎯 על מה זה משפיע: #משכנתאות #הלוואות #ריבית_על_פיקדונות #מניות_צמיחה_וטק #שער_הדולר_שקל #קריפטו
-
-למידע בלבד. אין כאן המלצה לפעולה בשוק.
-```
-
-### Macro data
-
-```text
-📋 מאקרו · מדד המחירים לצרכן עלה פחות מהצפוי
-
-מדד המחירים לצרכן בארה״ב עלה בקצב איטי יותר ממה שהכלכלנים צפו. גם המדד בלי מזון ואנרגיה התקרר. שוק העבודה לא השתנה בהודעה הזו. — <a href="https://example.com/fixtures/macro">CNBC</a>
-
-מה זה אומר לשוק: הפתעה כלפי מטה במדד כזה בדרך כלל מורידה ציפיות להעלאת ריבית, ולכן אג״ח ומניות יכולות לעלות מיד אחרי הפרסום.
-
-🎯 על מה זה משפיע: #ציפיות_לריבית #אג״ח_ממשלתיות #מדדי_מניות #שער_הדולר #מחירי_הזהב
-
-למידע בלבד. אין כאן המלצה לפעולה בשוק.
-```
-
-### Commodities
-
-```text
-🛢️ סחורות · מחיר הנפט עלה בגלל חשש משיבוש באספקה
-
-מחיר חבית נפט גולמי עלה אחרי דיווחים על שיבוש אפשרי בהובלה. גם מחירי הגז זזו באותו כיוון. הזהב נשאר יציב יחסית באותו יום. — <a href="https://example.com/fixtures/commodities">CNBC</a>
-
-מה זה אומר לשוק: נפט יקר יותר יכול להעלות עלויות של חברות תעופה ותחבורה, ולפעמים גם את ציפיות האינפלציה.
-
-🎯 על מה זה משפיע: #מחיר_הנפט #מחיר_הגז #חברות_תעופה #עלויות_תחבורה #ציפיות_לאינפלציה
-
-למידע בלבד. אין כאן המלצה לפעולה בשוק.
-```
-
-### Currencies
-
-```text
-💱 מט״ח · השקל נחלש מול הדולר והאירו
-
-הדולר והאירו התחזקו מול השקל במסחר היום. התנועה הגיעה בלי החלטת ריבית חדשה בישראל. מטבעות אחרים של שווקים קטנים זזו בצורה מתונה. — <a href="https://example.com/fixtures/forex">Google News</a>
-
-מה זה אומר לשוק: שקל חלש יותר מייקר יבוא ומחירי נסיעות לחו״ל, ויכול לתמוך בחברות ישראליות שמוכרות בדולרים.
-
-🎯 על מה זה משפיע: #שער_הדולר_שקל #שער_האירו_שקל #מחירי_יבוא #נסיעות_לחו״ל #חברות_שמוכרות_בדולרים
-
-למידע בלבד. אין כאן המלצה לפעולה בשוק.
-```
-
-### Israel
-
-```text
-🇮🇱 ישראל · בנק ישראל השאיר את הריבית ללא שינוי
-
-בנק ישראל החליט לא לשנות את הריבית. הנגיד אמר שהאינפלציה עדיין מעל היעד. מדד תל אביב 35 נע סביב ההודעה בלי כיוון חד. — <a href="https://example.com/fixtures/israel">Globes</a>
-
-מה זה אומר לשוק: ריבית ללא שינוי משאירה את עלות המשכנתאות והאשראי העסקי קרובה לרמה הנוכחית, והשוק יחפש רמזים להחלטה הבאה.
-
-🎯 על מה זה משפיע: #משכנתאות #הלוואות #ריבית_על_פיקדונות #מדד_תל_אביב #שער_הדולר_שקל #מניות_הבנקים
-
-למידע בלבד. אין כאן המלצה לפעולה בשוק.
-```
-
-### IPOs
-
-```text
-🔔 הנפקות · חברת תוכנה הגישה תשקיף לקראת הנפקה
-
-החברה הגישה מסמכים כדי למכור מניות לציבור בפעם הראשונה. עוד לא נקבע המחיר הסופי ולא התאריך. בתשקיף היא תיארה הפסד בשנה האחרונה. — <a href="https://example.com/fixtures/ipo">Google News</a>
-
-מה זה אומר לשוק: הנפקה גדולה יכולה למשוך כסף ממניות אחרות באותו סקטור ביום המסחר הראשון, כי קונים מפנים מזומן לעסקה החדשה.
-
-🎯 על מה זה משפיע: #מניות_תוכנה #כסף_פנוי_של_משקיעים #בנקים_מובילי_ההנפקה #שוק_ההנפקות #מדדי_המניות
-
-למידע בלבד. אין כאן המלצה לפעולה בשוק.
-```
-
-### Mergers
-
-```text
-🤝 מיזוגים · ענקית תרופות תרכוש מתחרה קטנה יותר
-
-החברה הודיעה שתרכוש חברה אחרת בעסקה של כמה מיליארדי דולרים. העסקה עוד צריכה אישור של רגולטורים. מניית החברה הנרכשת עלתה, ומניית הרוכשת ירדה מעט. — <a href="https://example.com/fixtures/ma">Google News</a>
-
-מה זה אומר לשוק: בעסקאות כאלה המניה הנרכשת בדרך כלל מתקרבת למחיר שהוצע, והרוכשת זזה לפי החשש מתשלום גבוה מדי או מחיסכון עתידי בעלויות.
-
-🎯 על מה זה משפיע: #מניית_הנרכשת #מניית_הרוכשת #מניות_תרופות #אישורי_רגולציה #אג״ח_של_החברות
-
-למידע בלבד. אין כאן המלצה לפעולה בשוק.
-```
-
-### Regulation
-
-```text
-⚖️ רגולציה · רשות ניירות ערך בארה״ב פתחה בבדיקה של קרן גדולה
-
-הרשות הודיעה שפתחה בבדיקה של דיווחים לציבור בקרן השקעות גדולה. לא הוגש כתב אישום. החברה אמרה שהיא משתפת פעולה. — <a href="https://example.com/fixtures/regulation">SEC</a>
-
-מה זה אומר לשוק: בדיקה כזו יכולה ללחוץ על מניית החברה ועל קרנות דומות, כל עוד לא ברור אם יהיה קנס או רק דרישה לתיקון דיווחים.
-
-🎯 על מה זה משפיע: #מניית_הקרן #קרנות_דומות #דיווחים_לציבור #קנסות_אפשריים #אמון_המשקיעים
-
-למידע בלבד. אין כאן המלצה לפעולה בשוק.
-```
-
-### Housing
-
-```text
-🏠 נדל״ן · מכירות הבתים בארה״ב הואטו כשריבית המשכנתא נשארה גבוהה
-
-מספר הבתים שנמכרו ירד לעומת החודש הקודם. ריבית המשכנתא ל-30 שנה כמעט לא זזה. מלאי הבתים למכירה עלה מעט. — <a href="https://example.com/fixtures/housing">CNBC</a>
-
-מה זה אומר לשוק: שוק דיור איטי יותר יכול לקרר הוצאות של משקי בית ואת הביקוש למוצרי בית, ולהשפיע על הציפיות להורדת ריבית.
-
-🎯 על מה זה משפיע: #ריבית_משכנתא #מכירות_בתים #מניות_חברות_בנייה #הוצאות_משק_הבית #ציפיות_לריבית
-
-למידע בלבד. אין כאן המלצה לפעולה בשוק.
-```
-
-### Trade and geopolitics
-
-```text
-🌍 סחר ועולם · איום במכסים חדשים טלטל מניות של יצואנים
-
-איום להטיל מכסים על יבוא ממדינה גדולה הוריד מניות של חברות שמוכרות לשם. גם מטבע של אותה מדינה נחלש. עדיין לא נחתם צו רשמי. — <a href="https://example.com/fixtures/geopolitics">Google News</a>
-
-מה זה אומר לשוק: מכס חדש יכול לייקר מוצרים, לחתוך רווחים של יצואנים, ולהזיז גם סחורות ומטבעות שקשורים לאותו נתיב סחר.
-
-🎯 על מה זה משפיע: #מניות_יצואנים #מחירי_יבוא #שערי_מטבע #סחורות #שרשראות_אספקה
-
-למידע בלבד. אין כאן המלצה לפעולה בשוק.
-```
-
-### Tech and AI
-
-```text
-🤖 טק ו-AI · הוצאות הענק על בינה מלאכותית מטלטלות את מניות השבבים
-
-כמה חברות טכנולוגיה גדולות אמרו שיגדילו השקעה בחוות שרתים ובשבבים. מניות יצרני השבבים עלו, וחלק מספקיות הענן ירדו בגלל חשש מההוצאה. לא פורסם שינוי במחיר המוצרים לצרכן. — <a href="https://example.com/fixtures/tech">CNBC</a>
-
-מה זה אומר לשוק: כשחברות הענק משנות את תקציב הבינה המלאכותית, כל שרשרת השבבים, החשמל והענן יכולה לזוז יחד.
-
-🎯 על מה זה משפיע: #מניות_שבבים #ספקיות_ענן #הוצאות_על_בינה_מלאכותית #חוות_שרתים #מדדי_הטכנולוגיה
-
-למידע בלבד. אין כאן המלצה לפעולה בשוק.
-```
-
-### Banks and fintech
-
-```text
-🏛️ בנקים · בנק גדול הרוויח ממסחר והזהיר מהפסדי אשראי
-
-הבנק דיווח על רווח גבוה מהמסחר במניות ובאג״ח, בין השאר מול קרנות גידור. במקביל הוא הגדיל את הרזרבה להפסדי אשראי. המניה נעה בשני הכיוונים במהלך היום. — <a href="https://example.com/fixtures/banks">Google News</a>
-
-מה זה אומר לשוק: רווח ממסחר יכול לחזק את מניות הבנקים בטווח הקצר, אבל רזרבה גבוהה יותר להפסדים מאותתת שהבנק רואה יותר סיכון אצל לווים.
-
-🎯 על מה זה משפיע: #מניות_הבנקים #רווחי_מסחר #הפסדי_אשראי #פיקדונות #קרנות_גידור
-
-למידע בלבד. אין כאן המלצה לפעולה בשוק.
-```
+If this helped you, give it a star.
