@@ -20,20 +20,25 @@ flowchart TD
   secret -->|yes| sub[Store the chat id in KV]
   cron[Cron every 5 minutes] --> pick[Priority feeds plus a rotating window]
   pick --> rss[Fetch public RSS]
-  rss --> parse[Parse, drop old items, drop items already in KV]
+  rss --> parse[Parse, drop old items, drop seen ids, URLs, and titles]
   parse --> balance[Round-robin by category]
-  balance --> gemini[Gemini, then Workers AI if Gemini is down]
+  balance --> budget{Still inside the 45s budget?}
+  budget -->|no| done[Finish the run. Unseen stories wait for the next cron]
+  budget -->|yes| gemini[Gemini, then Workers AI if Gemini is down]
   gemini --> gate{Score at least the threshold and the text is Hebrew?}
-  gate -->|no| kv[Remember the id in one KV key]
-  gate -->|yes| msg[Format with category emoji and tag]
+  gate -->|no| hold[Remember rejected and low scores]
+  gate -->|yes| pending[Write a pending marker to KV]
+  pending --> msg[Format with category emoji and tag]
   msg --> dry{DRY_RUN?}
   dry -->|yes| log[Log the message]
   dry -->|no| tg[Send to every subscriber]
   tg --> blocked{Telegram 403?}
   blocked -->|yes| drop[Remove that chat id]
-  blocked -->|no| kv
-  log --> kv
-  drop --> kv
+  blocked -->|no| seen[Save the seen id immediately]
+  log --> seen
+  drop --> seen
+  seen --> hold
+  hold --> done
 ```
 
 Gemini is called with `gemini-3.8-flash`. The call uses `fetch` as a free function bound to `globalThis`. Calling it as a method throws `Illegal invocation` in Workers and used to skip Gemini entirely. If the reply is not usable Hebrew, the worker asks again, then falls back to `gemini-3.5-flash-lite`. A Fed story is not retagged as crypto unless the text is actually about crypto.
@@ -41,6 +46,8 @@ Gemini is called with `gemini-3.8-flash`. The call uses `fetch` as a free functi
 Every prompt requires Hebrew only. Proper names are transliterated into Hebrew, the original English spelling may appear in parentheses, and tickers and numbers are allowed. Arabic script is rejected before a message is sent: Arabic (U+0600–U+06FF), Arabic Supplement (U+0750–U+077F), Arabic Extended-A (U+08A0–U+08FF), and the Arabic presentation forms (U+FB50–U+FDFF and U+FE70–U+FEFF). On that failure the worker asks the same model once more with a stricter instruction, then the next fallback model. Words that still contain Arabic letters are removed, and the Hebrew that remains is sent.
 
 If both Gemini calls fail with HTTP 429, a 5xx response, or a timeout, the worker asks Workers AI (`WORKERS_AI_MODEL`, default `@cf/meta/llama-3.3-70b-instruct-fp8-fast`, Llama 3.3 70B instruct). That model is the current Llama flagship on Workers AI and is large enough for everyday Hebrew. The smaller Llama 3.2 instruct models are multilingual but too small to trust for this. The same JSON schema, Hebrew-only instruction, and Arabic-script check apply. Output that is not usable Hebrew, or that gives investment advice, is not sent, and that item is not marked seen. When every model fails, the item is also left unseen, so a later cron retries it while it is still inside `MAX_AGE_HOURS`. Each accepted analysis logs the model id that wrote it. Gemini errors are logged without the API key.
+
+Each Gemini request and each Workers AI request aborts after 18 seconds. The run stops starting another story once it has been going for 45 seconds, finishes the KV write, and returns. Stories that were not started stay unseen for a later cron. A story is also remembered by its normalized URL (fragment and tracking parameters such as `utm_*` removed) and by a hash of the normalized title, so the same article from Google News and from the publisher feed is posted once.
 
 ## Why crypto does not crowd out other news
 
@@ -108,7 +115,7 @@ The affects line lists three to six short Hebrew tag terms as Telegram hashtags.
 This is built for the Workers free plan and the Gemini free tier. It does not provision paid resources.
 
 - One cron, `*/5 * * * *`. The free plan allows 5 cron triggers per account. CPU time on the free plan is 10 ms per cron; time spent waiting on RSS, Gemini, Telegram, and KV does not count. Bodies are capped and each feed keeps only a few items so parsing stays small.
-- One seen key (`seen:v1`, or `seen:dry-run:v1` while dry-run is on) and one subscriber key (`subscribers:v1`). A cron reads each once and writes only when the set changes. `/start` and `/stop` write the subscriber key when the set changes. The free plan allows 1,000 writes per day and one write per second to the same key. Seen ids expire after 72 hours.
+- One seen key (`seen:v1`, or `seen:dry-run:v1` while dry-run is on) and one subscriber key (`subscribers:v1`). A cron reads the seen key once. Each story that is about to be sent is written first as a pending marker, then written again after a successful send, so a run killed mid-loop does not post that story again. A Telegram error that returns normally clears the marker and the next cron retries it. Rejected stories and scores under the threshold are saved at the end of the run. `/start` and `/stop` write the subscriber key when the set changes. The free plan allows 1,000 writes per day and one write per second to the same key. The send sits between the two seen writes. Seen ids expire after 72 hours.
 - At most 5 stories per run by default, so a quiet day does not burn the Gemini quota. A Gemini 429, 5xx, or timeout tries the fallback Gemini model and then one Workers AI call. If all of them fail, or Workers AI returns text that fails the Hebrew check, the story is not marked seen and the next cron tries again until it is older than `MAX_AGE_HOURS`. A Gemini reply that is not usable Hebrew, after the Hebrew retry, is remembered so the same bad draft is not scored forever. A draft that is Hebrew but still contains Arabic script after the stricter retry and the next model is sent with those words removed. A Telegram 403 removes that subscriber and the item is still remembered. Workers AI has its own daily allowance and is not on the Gemini quota.
 - 50 subrequests per invocation on the free plan. Each news item is one `sendMessage` per subscriber, with a 40 ms gap (about 25 messages per second). A handful of subscribers fits next to the feed fetches. A long list does not fit in one free-plan cron. Feeds are fetched four at a time because the free plan allows 6 simultaneous outgoing connections.
 
@@ -205,8 +212,8 @@ npm run test:coverage
 The suite covers:
 
 - **Parsing.** RSS and Atom feeds, including CDATA, entities, dates, and Hebrew titles.
-- **Dedupe.** Seen ids in KV, the TTL, and a separate dry-run key so a rehearsal does not suppress a live story.
-- **Model fallback.** Gemini, then Gemini lite, then Workers AI. A draft that is not usable Hebrew is requested again from Gemini and, if that is still unusable, from Gemini lite. HTTP 429, a 5xx response, or a timeout on both Gemini calls is the only path to Workers AI. An auth failure stops the chain. Text that still fails the Hebrew check is not sent.
+- **Dedupe.** Seen ids in KV, written before the run returns so a killed cron does not repost, normalized URL and title fingerprints, the TTL, and a separate dry-run key so a rehearsal does not suppress a live story.
+- **Model fallback.** Gemini, then Gemini lite, then Workers AI. A draft that is not usable Hebrew is requested again from Gemini and, if that is still unusable, from Gemini lite. HTTP 429, a 5xx response, or a timeout on both Gemini calls is the only path to Workers AI. Each of those calls aborts after 18 seconds. An auth failure stops the chain. Text that still fails the Hebrew check is not sent.
 - **Hebrew output validation.** The headline, summary, and market line must be Hebrew. Arabic script is rejected, retried on the same model and the next fallback model, then stripped. Wording that tells the reader to buy, sell, or invest is dropped. An affects list keeps three to six Hebrew phrases.
 - **Gemini transport.** `fetch` is called as a free function. The default is bound to `globalThis`, and a stub that throws when `this` is set still reaches Gemini. Error logs include the Gemini message and never the API key.
 - **Subscriber commands.** `/start`, `/stop`, and `/help`, an unknown command, the webhook secret, and removal of a chat that blocks the bot.

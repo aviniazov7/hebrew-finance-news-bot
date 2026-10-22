@@ -4,8 +4,15 @@ export const DEFAULT_WORKERS_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fas
 /** Default Workers AI max_tokens is 256, which truncates this JSON. */
 export const WORKERS_AI_MAX_TOKENS = 2048;
 
+/** Bound every model call so one hung request cannot outlive the cron. */
+export const MODEL_CALL_TIMEOUT_MS = 18_000;
+
+export interface WorkersAiRunOptions {
+  signal?: AbortSignal;
+}
+
 export interface WorkersAiBinding {
-  run(model: string, inputs: WorkersAiInput): Promise<unknown>;
+  run(model: string, inputs: WorkersAiInput, options?: WorkersAiRunOptions): Promise<unknown>;
 }
 
 export interface WorkersAiInput {
@@ -18,15 +25,49 @@ export async function runWorkersAi(args: {
   model: string;
   system: string;
   user: string;
+  timeoutMs?: number;
 }): Promise<string> {
-  const output = await args.ai.run(args.model, {
-    messages: [
-      { role: "system", content: args.system },
-      { role: "user", content: args.user },
-    ],
-    max_tokens: WORKERS_AI_MAX_TOKENS,
-  });
+  const signal = AbortSignal.timeout(args.timeoutMs ?? MODEL_CALL_TIMEOUT_MS);
+  const output = await withAbortSignal(
+    args.ai.run(
+      args.model,
+      {
+        messages: [
+          { role: "system", content: args.system },
+          { role: "user", content: args.user },
+        ],
+        max_tokens: WORKERS_AI_MAX_TOKENS,
+      },
+      { signal },
+    ),
+    signal,
+  );
   return workersResponseText(output);
+}
+
+async function withAbortSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) throw abortError(signal);
+  return await new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortError(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function abortError(signal: AbortSignal): unknown {
+  if (signal.reason !== undefined) return signal.reason;
+  const error = new Error("The operation was aborted due to timeout");
+  error.name = "TimeoutError";
+  return error;
 }
 
 export function workersResponseText(output: unknown): string {

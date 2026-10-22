@@ -1,19 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config.ts";
-import { DRY_RUN_SEEN_KEY } from "../src/dedupe.ts";
+import { DRY_RUN_SEEN_KEY, LIVE_SEEN_KEY, pendingMarker, storyTitleKey, storyUrlKey } from "../src/dedupe.ts";
 import type { AnalyzeResult } from "../src/gemini.ts";
-import { runPipeline } from "../src/pipeline.ts";
+import { RUN_ITEM_BUDGET_MS, runPipeline } from "../src/pipeline.ts";
 import type { NewsItem } from "../src/types.ts";
 import { MemoryKv } from "./memory-kv.ts";
 
 const NOW = Date.parse("2026-10-21T16:00:00Z");
 
-function rss(items: Array<{ title: string; id: string; when: string }>): string {
+function rss(items: Array<{ title: string; id: string; when: string; link?: string }>): string {
   const body = items
     .map(
       (item) => `<item>
         <title>${item.title}</title>
-        <link>https://example.com/${item.id}</link>
+        <link>${item.link ?? `https://example.com/${item.id}`}</link>
         <guid>${item.id}</guid>
         <pubDate>${item.when}</pubDate>
         <description>Enough detail about markets, rates, and prices for a summary of this story.</description>
@@ -78,13 +78,14 @@ describe("runPipeline", () => {
     expect(first.dryRun).toBe(2);
     expect(first.posted).toBe(0);
     expect(calls.sort()).toEqual(["crypto", "macro"]);
-    expect(kv.writes).toBe(1);
+    // Pending marker and confirm write for each of the two stories.
+    expect(kv.writes).toBe(4);
 
     const second = await runPipeline({ config, kv, fetchImpl, now: () => NOW, analyze });
     expect(second.dryRun).toBe(0);
     expect(second.itemsSelected).toBe(0);
     expect(calls).toHaveLength(2);
-    expect(kv.writes).toBe(1);
+    expect(kv.writes).toBe(4);
   });
 
   it("posts only items at or above the threshold", async () => {
@@ -342,5 +343,290 @@ describe("runPipeline", () => {
       globalThis.fetch = original;
     }
     expect(receiver).toBe(globalThis);
+  });
+
+  it("leaves a posted id in KV when the run throws on the next story", async () => {
+    const kv = new MemoryKv();
+    let phase: "run" | "kill-next" | "done" = "run";
+    const put = kv.put.bind(kv);
+    kv.put = async (key, value) => {
+      if (phase === "kill-next" && key === DRY_RUN_SEEN_KEY) {
+        phase = "done";
+        throw new Error("worker killed");
+      }
+      await put(key, value);
+      if (key !== DRY_RUN_SEEN_KEY || phase !== "run") return;
+      const map = JSON.parse(value) as Record<string, number>;
+      if (map["CNBC:first"] !== undefined && map[pendingMarker("CNBC:first")] === undefined) phase = "kill-next";
+    };
+    const fetchImpl: typeof fetch = async () =>
+      new Response(
+        rss([
+          { title: "second story", id: "second", when: "Wed, 21 Oct 2026 15:30:00 GMT" },
+          { title: "first story", id: "first", when: "Wed, 21 Oct 2026 14:00:00 GMT" },
+        ]),
+      );
+    const config = parseConfig({
+      FEEDS: JSON.stringify([{ name: "CNBC", url: "https://example.com/stocks.xml", category: "stocks" }]),
+      DRY_RUN: "true",
+      GEMINI_API_KEY: "test-key",
+      FEEDS_PER_RUN: "0",
+      MAX_PER_CATEGORY: "2",
+    });
+    const scored: string[] = [];
+    await expect(
+      runPipeline({
+        config,
+        kv,
+        fetchImpl,
+        now: () => NOW,
+        analyze: async (args) => {
+          scored.push(args.item.id);
+          return hebrew(args.item.title);
+        },
+      }),
+    ).rejects.toThrow("worker killed");
+    const seen = JSON.parse((await kv.get(DRY_RUN_SEEN_KEY)) ?? "{}") as Record<string, number>;
+    expect(seen["CNBC:first"]).toBe(NOW);
+    expect(seen["CNBC:second"]).toBeUndefined();
+    expect(seen[pendingMarker("CNBC:first")]).toBeUndefined();
+
+    const retried: string[] = [];
+    const second = await runPipeline({
+      config,
+      kv,
+      fetchImpl,
+      now: () => NOW,
+      analyze: async (args) => {
+        retried.push(args.item.id);
+        return hebrew(args.item.title);
+      },
+    });
+    expect(scored).toEqual(["CNBC:first", "CNBC:second"]);
+    expect(retried).toEqual(["CNBC:second"]);
+    expect(second.dryRun).toBe(1);
+  });
+
+  it("keeps a pending marker when the send throws, so the next run does not repost", async () => {
+    const kv = new MemoryKv();
+    await kv.put("subscribers:v1", JSON.stringify({ "111": 1, "222": 1 }));
+    kv.writes = 0;
+    const chats: string[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (url.includes("api.telegram.org")) {
+        const body = typeof init?.body === "string" ? init.body : "";
+        chats.push(/"chat_id":"(\d+)"/.exec(body)?.[1] ?? "");
+        return new Response(JSON.stringify({ ok: true }));
+      }
+      return new Response(rss([{ title: "major event", id: "major", when: "Wed, 21 Oct 2026 15:00:00 GMT" }]));
+    };
+    const config = parseConfig({
+      FEEDS: JSON.stringify([{ name: "CNBC", url: "https://example.com/stocks.xml", category: "stocks" }]),
+      DRY_RUN: "false",
+      GEMINI_API_KEY: "test-key",
+      TELEGRAM_BOT_TOKEN: "TEST",
+      TELEGRAM_CHAT_ID: "",
+      FEEDS_PER_RUN: "0",
+    });
+    await expect(
+      runPipeline({
+        config,
+        kv,
+        fetchImpl,
+        now: () => NOW,
+        sleep: async () => {
+          throw new Error("killed mid-send");
+        },
+        analyze: async (args) => hebrew(args.item.title),
+      }),
+    ).rejects.toThrow("killed mid-send");
+    const seen = JSON.parse((await kv.get(LIVE_SEEN_KEY)) ?? "{}") as Record<string, number>;
+    expect(seen[pendingMarker("CNBC:major")]).toBe(NOW);
+    expect(chats).toEqual(["111"]);
+
+    const second = await runPipeline({
+      config,
+      kv,
+      fetchImpl,
+      now: () => NOW,
+      sleep: async () => {},
+      analyze: async () => {
+        throw new Error("should not score a pending story");
+      },
+    });
+    expect(second.posted).toBe(0);
+    expect(second.itemsSelected).toBe(0);
+    expect(chats).toEqual(["111"]);
+  });
+
+  it("drops the pending marker when Telegram fails, so the next run can retry", async () => {
+    const kv = new MemoryKv();
+    let telegramCalls = 0;
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.includes("api.telegram.org")) {
+        telegramCalls += 1;
+        if (telegramCalls === 1) return new Response("unavailable", { status: 500 });
+        return new Response(JSON.stringify({ ok: true }));
+      }
+      return new Response(rss([{ title: "major event", id: "major", when: "Wed, 21 Oct 2026 15:00:00 GMT" }]));
+    };
+    const config = parseConfig({
+      FEEDS: JSON.stringify([{ name: "CNBC", url: "https://example.com/stocks.xml", category: "stocks" }]),
+      DRY_RUN: "false",
+      GEMINI_API_KEY: "test-key",
+      TELEGRAM_BOT_TOKEN: "TEST",
+      TELEGRAM_CHAT_ID: "101",
+      FEEDS_PER_RUN: "0",
+    });
+    const first = await runPipeline({
+      config,
+      kv,
+      fetchImpl,
+      now: () => NOW,
+      analyze: async (args) => hebrew(args.item.title),
+    });
+    expect(first.posted).toBe(0);
+    expect(first.errors).toBe(1);
+    const seen = JSON.parse((await kv.get(LIVE_SEEN_KEY)) ?? "{}") as Record<string, number>;
+    expect(seen["CNBC:major"]).toBeUndefined();
+    expect(seen[pendingMarker("CNBC:major")]).toBeUndefined();
+
+    const second = await runPipeline({
+      config,
+      kv,
+      fetchImpl,
+      now: () => NOW,
+      analyze: async (args) => hebrew(args.item.title),
+    });
+    expect(second.posted).toBe(1);
+    expect(telegramCalls).toBe(2);
+  });
+
+  it("stops before the next story once the run budget is spent and leaves it unseen", async () => {
+    const kv = new MemoryKv();
+    let elapsed = 0;
+    const scored: string[] = [];
+    const fetchImpl: typeof fetch = async () =>
+      new Response(
+        rss([
+          { title: "later story", id: "later", when: "Wed, 21 Oct 2026 15:30:00 GMT" },
+          { title: "earlier story", id: "earlier", when: "Wed, 21 Oct 2026 14:00:00 GMT" },
+        ]),
+      );
+    const config = parseConfig({
+      FEEDS: JSON.stringify([{ name: "CNBC", url: "https://example.com/stocks.xml", category: "stocks" }]),
+      DRY_RUN: "true",
+      GEMINI_API_KEY: "test-key",
+      FEEDS_PER_RUN: "0",
+      MAX_PER_CATEGORY: "2",
+    });
+    const first = await runPipeline({
+      config,
+      kv,
+      fetchImpl,
+      now: () => NOW,
+      clock: () => elapsed,
+      analyze: async (args) => {
+        scored.push(args.item.id);
+        elapsed = RUN_ITEM_BUDGET_MS;
+        return hebrew(args.item.title);
+      },
+    });
+    expect(first.dryRun).toBe(1);
+    expect(first.itemsSelected).toBe(2);
+    expect(scored).toEqual(["CNBC:earlier"]);
+    const seen = JSON.parse((await kv.get(DRY_RUN_SEEN_KEY)) ?? "{}") as Record<string, number>;
+    expect(seen["CNBC:earlier"]).toBe(NOW);
+    expect(seen["CNBC:later"]).toBeUndefined();
+
+    elapsed = 0;
+    const second = await runPipeline({
+      config,
+      kv,
+      fetchImpl,
+      now: () => NOW,
+      clock: () => elapsed,
+      analyze: async (args) => {
+        scored.push(args.item.id);
+        return hebrew(args.item.title);
+      },
+    });
+    expect(second.dryRun).toBe(1);
+    expect(scored).toEqual(["CNBC:earlier", "CNBC:later"]);
+  });
+
+  it("does not post the same story again when the url or the title matches another feed", async () => {
+    const kv = new MemoryKv();
+    const brent = "Brent crude jumps after the supply report";
+    const publisher = "https://www.cnbc.com/2026/10/22/brent.html?utm_source=rss&utm_medium=feed#top";
+    const scored: string[] = [];
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.includes("cnbc")) {
+        return new Response(
+          rss([
+            {
+              title: brent,
+              id: "brent",
+              link: publisher,
+              when: "Wed, 21 Oct 2026 15:00:00 GMT",
+            },
+          ]),
+        );
+      }
+      if (url.includes("google")) {
+        return new Response(
+          rss([
+            {
+              title: `${brent} - Reuters`,
+              id: "gn-brent",
+              link: "https://news.google.com/rss/articles/CBMiabc",
+              when: "Wed, 21 Oct 2026 15:05:00 GMT",
+            },
+          ]),
+        );
+      }
+      return new Response(
+        rss([
+          {
+            title: "A different oil headline about inventories",
+            id: "same-url",
+            link: "https://CNBC.com/2026/10/22/brent.html?fbclid=click&utm_campaign=gn",
+            when: "Wed, 21 Oct 2026 15:10:00 GMT",
+          },
+        ]),
+      );
+    };
+    const config = parseConfig({
+      FEEDS: JSON.stringify([
+        { name: "CNBC", url: "https://example.com/cnbc.xml", category: "stocks" },
+        { name: "Google News", url: "https://example.com/google.xml", category: "commodities" },
+        { name: "Mirror", url: "https://example.com/mirror.xml", category: "markets" },
+      ]),
+      DRY_RUN: "true",
+      GEMINI_API_KEY: "test-key",
+      FEEDS_PER_RUN: "0",
+      MAX_ITEMS_PER_RUN: "3",
+      MAX_PER_CATEGORY: "2",
+    });
+    const analyze = async (args: { item: NewsItem }): Promise<AnalyzeResult> => {
+      scored.push(args.item.id);
+      return hebrew(args.item.title);
+    };
+    const first = await runPipeline({ config, kv, fetchImpl, now: () => NOW, analyze });
+    expect(first.dryRun).toBe(1);
+    expect(first.itemsSelected).toBe(1);
+    expect(scored).toEqual(["CNBC:brent"]);
+    const seen = JSON.parse((await kv.get(DRY_RUN_SEEN_KEY)) ?? "{}") as Record<string, number>;
+    expect(seen[storyUrlKey(publisher) ?? ""]).toBe(NOW);
+    expect(seen[storyTitleKey(brent) ?? ""]).toBe(NOW);
+    expect(seen[storyTitleKey(`${brent} - Reuters`) ?? ""]).toBe(NOW);
+
+    const second = await runPipeline({ config, kv, fetchImpl, now: () => NOW, analyze });
+    expect(second.itemsSelected).toBe(0);
+    expect(second.dryRun).toBe(0);
+    expect(scored).toEqual(["CNBC:brent"]);
   });
 });

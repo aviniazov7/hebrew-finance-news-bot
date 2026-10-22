@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { analyzeItem } from "../src/gemini.ts";
 import type { NewsItem } from "../src/types.ts";
-import { DEFAULT_WORKERS_AI_MODEL } from "../src/workers-ai.ts";
+import { DEFAULT_WORKERS_AI_MODEL, MODEL_CALL_TIMEOUT_MS, type WorkersAiRunOptions } from "../src/workers-ai.ts";
 
 const item: NewsItem = {
   id: "fed:1",
@@ -587,6 +587,41 @@ describe("model fallback", () => {
       model: DEFAULT_WORKERS_AI_MODEL,
       analysis: { headline: "הבנק הוריד את הריבית ברבע נקודה" },
     });
+  });
+
+  it("aborts each hung Gemini call and the Workers AI call", async () => {
+    expect(MODEL_CALL_TIMEOUT_MS).toBeGreaterThanOrEqual(15_000);
+    expect(MODEL_CALL_TIMEOUT_MS).toBeLessThanOrEqual(20_000);
+    const signals: AbortSignal[] = [];
+    const hang = (signal: AbortSignal | undefined): Promise<never> =>
+      new Promise((_resolve, reject) => {
+        if (!signal) {
+          reject(new Error("missing abort signal"));
+          return;
+        }
+        signals.push(signal);
+        if (signal.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    const result = await analyzeItem({
+      item,
+      categories: [{ id: "central-banks", emoji: "🏦", labelHe: "בנק מרכזי", labelEn: "Central banks" }],
+      apiKey: "key",
+      model: "gemini-primary",
+      fallbackModel: "gemini-fallback",
+      timeoutMs: 40,
+      ai: {
+        run: (_model, _inputs, options?: WorkersAiRunOptions) => hang(options?.signal),
+      },
+      fetchImpl: async (_input, init) => hang(init?.signal ?? undefined),
+    });
+    expect(result).toEqual({ ok: false, remember: false, reason: "transport" });
+    expect(signals).toHaveLength(3);
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+    expect(signals.every((signal) => signal.reason instanceof Error && signal.reason.name === "TimeoutError")).toBe(true);
   });
 });
 
