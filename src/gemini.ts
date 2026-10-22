@@ -7,7 +7,12 @@ import {
 import { logError, logInfo } from "./log.ts";
 import { IMPORTANCE_RUBRIC } from "./scoring.ts";
 import type { Analysis, Category, NewsItem } from "./types.ts";
-import { DEFAULT_WORKERS_AI_MODEL, runWorkersAi, type WorkersAiBinding } from "./workers-ai.ts";
+import {
+  DEFAULT_WORKERS_AI_MODEL,
+  MODEL_CALL_TIMEOUT_MS,
+  runWorkersAi,
+  type WorkersAiBinding,
+} from "./workers-ai.ts";
 
 export class GeminiError extends Error {
   readonly status: number;
@@ -144,10 +149,12 @@ export async function analyzeItem(args: {
   workersAiModel?: string;
   ai?: WorkersAiBinding;
   fetchImpl?: typeof fetch;
+  timeoutMs?: number;
 }): Promise<AnalyzeResult> {
   const fetchImpl = args.fetchImpl ?? fetch.bind(globalThis);
   const system = buildSystemInstruction(args.categories);
   const workersModel = args.workersAiModel?.trim() || DEFAULT_WORKERS_AI_MODEL;
+  const timeoutMs = args.timeoutMs ?? MODEL_CALL_TIMEOUT_MS;
 
   const once: GeminiCall = (model, remind, strictScript = false) =>
     geminiOnce({
@@ -156,6 +163,7 @@ export async function analyzeItem(args: {
       system,
       user: buildUserPrompt(args.item, remind, { strictScript }),
       fetchImpl,
+      timeoutMs,
     });
 
   const primary = await once(args.model, false);
@@ -198,6 +206,7 @@ export async function analyzeItem(args: {
     user: buildUserPrompt(args.item, true),
     item: args.item,
     rateLimited: primary.status === 429 && secondary.status === 429,
+    timeoutMs,
   });
 }
 
@@ -276,6 +285,7 @@ async function completeWithWorkersAi(args: {
   user: string;
   item: NewsItem;
   rateLimited: boolean;
+  timeoutMs: number;
 }): Promise<AnalyzeResult> {
   const first = await workersAttempt(args);
   if (first.kind === "transport") {
@@ -303,6 +313,7 @@ async function workersAttempt(args: {
   user: string;
   item: NewsItem;
   rateLimited: boolean;
+  timeoutMs: number;
 }): Promise<WorkersAttempt> {
   if (!args.ai) {
     logError({ message: "workers_ai_unavailable", id: args.item.id, model: args.model });
@@ -310,7 +321,13 @@ async function workersAttempt(args: {
   }
   let text = "";
   try {
-    text = await runWorkersAi({ ai: args.ai, model: args.model, system: args.system, user: args.user });
+    text = await runWorkersAi({
+      ai: args.ai,
+      model: args.model,
+      system: args.system,
+      user: args.user,
+      timeoutMs: args.timeoutMs,
+    });
   } catch (error) {
     logError({
       message: "workers_ai_failed",
@@ -337,6 +354,7 @@ async function geminiOnce(args: {
   system: string;
   user: string;
   fetchImpl: typeof fetch;
+  timeoutMs: number;
 }): Promise<GeminiAttempt> {
   try {
     const text = await generateFlexible(args);
@@ -382,6 +400,7 @@ async function generateFlexible(args: {
   system: string;
   user: string;
   fetchImpl: typeof fetch;
+  timeoutMs: number;
 }): Promise<string> {
   try {
     return await generate({ ...args, thinking: true });
@@ -406,6 +425,7 @@ async function generate(args: {
   user: string;
   thinking: boolean;
   fetchImpl: typeof fetch;
+  timeoutMs: number;
 }): Promise<string> {
   const generationConfig: Record<string, unknown> = {
     responseMimeType: "application/json",
@@ -427,7 +447,7 @@ async function generate(args: {
         contents: [{ role: "user", parts: [{ text: args.user }] }],
         generationConfig,
       }),
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(args.timeoutMs),
     },
   );
   if (!response.ok) {

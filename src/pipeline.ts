@@ -1,5 +1,15 @@
 import type { AppConfig } from "./config.ts";
-import { hasSeen, loadSeen, pruneSeen, remember, saveSeen, seenStorageKey, type KvStore } from "./dedupe.ts";
+import {
+  hasSeenItem,
+  loadSeen,
+  pendingMarker,
+  pruneSeen,
+  remember,
+  saveSeen,
+  seenStorageKey,
+  storyFingerprintKeys,
+  type KvStore,
+} from "./dedupe.ts";
 import { analyzeItem, type AnalyzeResult } from "./gemini.ts";
 import type { WorkersAiBinding } from "./workers-ai.ts";
 import { BODY_CHAR_CAP, mapPool, readLimitedText, USER_AGENT } from "./http.ts";
@@ -10,6 +20,9 @@ import { pickFeedsForRun, resolvePostedCategory, selectForScoring } from "./scor
 import { broadcastTargets, loadSubscribers, saveSubscribers, type SubscriberMap } from "./subscribers.ts";
 import { broadcastMessage } from "./telegram.ts";
 import type { NewsItem } from "./types.ts";
+
+/** Stop starting new stories after this, so the invocation can still save and return. */
+export const RUN_ITEM_BUDGET_MS = 45_000;
 
 export interface RunReport {
   feedsConsidered: number;
@@ -34,9 +47,13 @@ export async function runPipeline(deps: {
   analyze?: typeof analyzeItem;
   ai?: WorkersAiBinding;
   sleep?: (ms: number) => Promise<void>;
+  /** Wall clock for the per-run budget. Story timestamps keep using `now`. */
+  clock?: () => number;
 }): Promise<RunReport> {
   const fetchImpl = deps.fetchImpl ?? fetch.bind(globalThis);
   const now = (deps.now ?? Date.now)();
+  const clock = deps.clock ?? Date.now;
+  const startedAt = clock();
   const analyze = deps.analyze ?? analyzeItem;
   const report = emptyReport();
   const { config } = deps;
@@ -87,13 +104,17 @@ export async function runPipeline(deps: {
   const loaded = await loadSeen(deps.kv, storageKey);
   const pruned = pruneSeen(loaded, now, ttlMs);
   const seen = pruned.map;
+  let seenDirty = pruned.changed;
 
   const fresh: NewsItem[] = [];
-  const freshIds = new Set<string>();
+  const claimed = new Set<string>();
   for (const item of items) {
-    if (freshIds.has(item.id) || hasSeen(seen, item.id, now, ttlMs)) continue;
     if (!isFresh(item, now, maxAgeMs)) continue;
-    freshIds.add(item.id);
+    if (hasSeenItem(seen, item, now, ttlMs)) continue;
+    const fingerprints = storyFingerprintKeys(item);
+    if (claimed.has(item.id) || fingerprints.some((key) => claimed.has(key))) continue;
+    claimed.add(item.id);
+    for (const key of fingerprints) claimed.add(key);
     fresh.push(item);
   }
 
@@ -103,11 +124,37 @@ export async function runPipeline(deps: {
   });
   report.itemsSelected = selected.length;
   const ordered = selected.slice().sort((a, b) => (a.publishedAt ?? 0) - (b.publishedAt ?? 0));
-  const toRemember: string[] = [];
   const blockedIds: string[] = [];
   let subscribers: SubscriberMap | null = null;
 
-  for (const item of ordered) {
+  const flushSeen = async (): Promise<void> => {
+    const next = pruneSeen(seen, now, ttlMs).map;
+    for (const key of Object.keys(seen)) {
+      if (!Object.prototype.hasOwnProperty.call(next, key)) delete seen[key];
+    }
+    for (const [key, ts] of Object.entries(next)) seen[key] = ts;
+    await saveSeen(deps.kv, storageKey, seen);
+    seenDirty = false;
+  };
+
+  const rememberStory = (item: NewsItem): void => {
+    remember(seen, item.id, now);
+    for (const key of storyFingerprintKeys(item)) remember(seen, key, now);
+    seenDirty = true;
+  };
+
+  for (let index = 0; index < ordered.length; index += 1) {
+    const item = ordered[index];
+    if (!item) continue;
+    if (hasSeenItem(seen, item, now, ttlMs)) {
+      logInfo({ message: "duplicate_skipped", id: item.id, source: item.source });
+      continue;
+    }
+    const elapsedMs = clock() - startedAt;
+    if (elapsedMs >= RUN_ITEM_BUDGET_MS) {
+      logInfo({ message: "run_budget_stop", elapsedMs, skipped: ordered.length - index });
+      break;
+    }
     let result: AnalyzeResult;
     try {
       result = await analyze({
@@ -133,7 +180,7 @@ export async function runPipeline(deps: {
     if (!result.ok) {
       if (result.reason === "rejected") {
         report.rejected += 1;
-        if (result.remember) toRemember.push(item.id);
+        if (result.remember) rememberStory(item);
         logInfo({ message: "rejected_output", id: item.id, source: item.source, remember: result.remember });
       } else {
         report.errors += 1;
@@ -145,7 +192,7 @@ export async function runPipeline(deps: {
 
     if (result.analysis.importance < config.importanceThreshold) {
       report.belowThreshold += 1;
-      toRemember.push(item.id);
+      rememberStory(item);
       logInfo({
         message: "below_threshold",
         id: item.id,
@@ -174,21 +221,38 @@ export async function runPipeline(deps: {
     });
     if (!subscribers) subscribers = await loadSubscribers(deps.kv);
     const recipients = broadcastTargets(subscribers, config.telegramChatId);
-    const delivery = await broadcastMessage({
-      text,
-      dryRun: config.dryRun,
-      token: config.telegramBotToken,
-      recipients,
-      fetchImpl,
-      sleep: deps.sleep,
-      logContext: {
+    const pending = pendingMarker(item.id);
+    const pendingKeys = [pending, ...storyFingerprintKeys(item)].filter((key) => seen[key] === undefined);
+    remember(seen, pending, now);
+    for (const key of storyFingerprintKeys(item)) remember(seen, key, now);
+    seenDirty = true;
+    logInfo({ message: "seen_pending", id: item.id, source: item.source });
+    await flushSeen();
+    let delivery;
+    try {
+      delivery = await broadcastMessage({
+        text,
+        dryRun: config.dryRun,
+        token: config.telegramBotToken,
+        recipients,
+        fetchImpl,
+        sleep: deps.sleep,
+        logContext: {
+          id: item.id,
+          source: item.source,
+          category: category.id,
+          importance: result.analysis.importance,
+          model: result.model,
+        },
+      });
+    } catch (error) {
+      logError({
+        message: "deliver_threw",
         id: item.id,
-        source: item.source,
-        category: category.id,
-        importance: result.analysis.importance,
-        model: result.model,
-      },
-    });
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
     for (const chatId of delivery.blocked) {
       if (subscribers[chatId] !== undefined) {
         delete subscribers[chatId];
@@ -196,14 +260,21 @@ export async function runPipeline(deps: {
       }
     }
     if (delivery.status === "failed") {
+      for (const key of pendingKeys) delete seen[key];
+      seenDirty = true;
+      await flushSeen();
       report.errors += 1;
       logError({ message: "deliver_failed", id: item.id, detail: delivery.detail });
       continue;
     }
+    delete seen[pending];
+    remember(seen, item.id, now);
+    seenDirty = true;
+    await flushSeen();
+    logInfo({ message: "seen_persisted", id: item.id, source: item.source });
     if (delivery.status === "dry_run") report.dryRun += 1;
     else report.posted += 1;
     report.postedByCategory[category.id] = (report.postedByCategory[category.id] ?? 0) + 1;
-    toRemember.push(item.id);
   }
 
   if (blockedIds.length > 0) {
@@ -221,11 +292,7 @@ export async function runPipeline(deps: {
     }
   }
 
-  if (toRemember.length > 0 || pruned.changed) {
-    for (const id of toRemember) remember(seen, id, now);
-    const finalMap = pruneSeen(seen, now, ttlMs).map;
-    await saveSeen(deps.kv, storageKey, finalMap);
-  }
+  if (seenDirty) await flushSeen();
   return report;
 }
 

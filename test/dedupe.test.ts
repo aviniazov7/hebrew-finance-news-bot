@@ -2,13 +2,20 @@ import { describe, expect, it } from "vitest";
 import {
   DRY_RUN_SEEN_KEY,
   hasSeen,
+  hasSeenItem,
   LIVE_SEEN_KEY,
+  type SeenMap,
   loadSeen,
+  normalizeStoryUrl,
+  normalizeTitle,
   parseSeen,
+  pendingMarker,
   pruneSeen,
   remember,
   saveSeen,
   seenStorageKey,
+  storyTitleKey,
+  storyUrlKey,
 } from "../src/dedupe.ts";
 import { MemoryKv } from "./memory-kv.ts";
 
@@ -47,5 +54,39 @@ describe("dedupe", () => {
     const loaded = await loadSeen(kv, LIVE_SEEN_KEY);
     expect(hasSeen(loaded, "CNBC:1", now + 1000, 60_000)).toBe(true);
     expect(await loadSeen(kv, DRY_RUN_SEEN_KEY)).toEqual({});
+  });
+
+  it("treats tracking params and publisher suffixes as the same story", () => {
+    const publisher = "https://www.cnbc.com/2026/10/22/oil.html?utm_source=rss&utm_medium=feed&id=9#story";
+    const tracked = "https://CNBC.com/2026/10/22/oil.html?fbclid=abc&id=9&utm_campaign=gn";
+    expect(normalizeStoryUrl(publisher)).toBe(normalizeStoryUrl(tracked));
+    expect(normalizeStoryUrl(publisher)).toBe("https://cnbc.com/2026/10/22/oil.html?id=9");
+    expect(storyUrlKey(publisher)).toBe(storyUrlKey(tracked));
+    expect(normalizeStoryUrl("https://news.google.com/rss/articles/CBMi")).not.toBe(normalizeStoryUrl(publisher));
+    expect(normalizeStoryUrl("not a url")).toBeNull();
+
+    const headline = "Brent crude jumps after the supply report";
+    expect(normalizeTitle(`  ${headline.toUpperCase()} - Reuters  `)).toBe(normalizeTitle(headline));
+    expect(normalizeTitle(`${headline} | Google News`)).toBe(normalizeTitle(headline));
+    expect(storyTitleKey(`${headline} - CNBC`)).toBe(storyTitleKey(headline));
+    expect(storyTitleKey("Fed holds rates")).not.toBe(storyTitleKey(headline));
+    expect(normalizeTitle("בנק ישראל השאיר את הריבית - גלובס")).toBe("בנק ישראל השאיר את הריבית");
+
+    const now = 1_700_000_000_000;
+    const map: SeenMap = {};
+    remember(map, storyTitleKey(headline) ?? "", now);
+    expect(
+      hasSeenItem(
+        map,
+        { id: "Google News:other", link: "https://news.google.com/rss/articles/CBMi", title: `${headline} - Reuters` },
+        now,
+        60_000,
+      ),
+    ).toBe(true);
+    expect(hasSeenItem(map, { id: "CNBC:1", link: publisher, title: "Different oil headline today" }, now, 60_000)).toBe(
+      false,
+    );
+    remember(map, pendingMarker("CNBC:1"), now);
+    expect(hasSeenItem(map, { id: "CNBC:1", link: "https://example.com/other", title: "Other" }, now, 60_000)).toBe(true);
   });
 });
