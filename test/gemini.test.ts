@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_CATEGORIES } from "../src/catalog.ts";
-import { buildSystemInstruction, buildUserPrompt, HEBREW_RETRY_NOTE, parseAnalysis } from "../src/gemini.ts";
+import {
+  ARABIC_RETRY_NOTE,
+  buildSystemInstruction,
+  buildUserPrompt,
+  HEBREW_ONLY_INSTRUCTION,
+  HEBREW_RETRY_NOTE,
+  parseAnalysis,
+} from "../src/gemini.ts";
 import type { NewsItem } from "../src/types.ts";
 
 const item: NewsItem = {
@@ -17,6 +24,13 @@ describe("Gemini parsing", () => {
   it("asks for Hebrew and for balanced scoring across markets", () => {
     const system = buildSystemInstruction(DEFAULT_CATEGORIES);
     expect(system).toContain("simple Hebrew");
+    expect(system).toContain(HEBREW_ONLY_INSTRUCTION);
+    expect(buildUserPrompt(item, false)).toContain(HEBREW_ONLY_INSTRUCTION);
+    expect(buildUserPrompt(item, false)).not.toContain(ARABIC_RETRY_NOTE);
+    const strict = buildUserPrompt(item, true, { strictScript: true });
+    expect(strict).toContain(ARABIC_RETRY_NOTE);
+    expect(strict).toContain(HEBREW_ONLY_INSTRUCTION);
+    expect(strict).not.toContain(HEBREW_RETRY_NOTE);
     expect(system).toContain("Do not favor crypto");
     expect(system).toContain("not automatically more important");
     expect(system).toContain("central-banks");

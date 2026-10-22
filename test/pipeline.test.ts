@@ -321,4 +321,26 @@ describe("runPipeline", () => {
     expect(second.rejected).toBe(0);
     expect(calls).toBe(1);
   });
+
+  it("binds the default fetch to globalThis", async () => {
+    const original = globalThis.fetch;
+    let receiver: unknown = "missing";
+    globalThis.fetch = function (this: unknown) {
+      receiver = this;
+      return Promise.resolve(new Response("down", { status: 500 }));
+    } as typeof fetch;
+    try {
+      const kv = new MemoryKv();
+      const config = parseConfig({
+        DRY_RUN: "true",
+        GEMINI_API_KEY: "test-key",
+        FEEDS_PER_RUN: "1",
+        FEEDS: JSON.stringify([{ name: "Fed", url: "https://example.com/fed.xml", category: "central-banks" }]),
+      });
+      await runPipeline({ config, kv, now: () => NOW, analyze: async () => hebrew("fed") });
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(receiver).toBe(globalThis);
+  });
 });

@@ -5,6 +5,15 @@ import { collapseWhitespace } from "./text.ts";
 const HEBREW_CHAR = /[\u0590-\u05FF]/g;
 const LATIN_CHAR = /[A-Za-z]/g;
 
+/**
+ * Blocks that must not appear in a posted story: Arabic, Arabic Supplement,
+ * Arabic Extended-A, and both Arabic presentation-form blocks.
+ */
+const ARABIC_SCRIPT = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/;
+/** Letters only. Punctuation and marks in those blocks are deleted in place. */
+const ARABIC_LETTER =
+  /[\u0621-\u064A\u066E-\u06D3\u06D5\u06EE-\u06EF\u06FA-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFC]/;
+
 const ADVICE_PATTERNS: readonly RegExp[] = [
   /כדאי\s+לקנות/,
   /כדאי\s+למכור/,
@@ -39,6 +48,37 @@ export function isPrimarilyHebrew(
 
 export function containsInvestmentAdvice(text: string): boolean {
   return ADVICE_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+export function containsArabicScript(text: string): boolean {
+  return ARABIC_SCRIPT.test(text);
+}
+
+/** Drop words that contain Arabic letters, then delete any leftover Arabic-script characters. */
+export function stripOffendingWords(text: string): string {
+  const kept: string[] = [];
+  for (const word of text.split(/\s+/)) {
+    if (!word || ARABIC_LETTER.test(word)) continue;
+    const cleaned = word.replace(/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/g, "");
+    if (cleaned) kept.push(cleaned);
+  }
+  return collapseWhitespace(kept.join(" "));
+}
+
+export function generatedHebrewText(
+  analysis: Pick<Analysis, "headline" | "summary" | "marketMeaning" | "affects">,
+): string {
+  return [analysis.headline, analysis.summary, analysis.marketMeaning, ...analysis.affects].join("\n");
+}
+
+export function stripArabicFromAnalysis(analysis: Analysis): Analysis {
+  return {
+    ...analysis,
+    headline: stripOffendingWords(analysis.headline),
+    summary: stripOffendingWords(analysis.summary),
+    marketMeaning: stripOffendingWords(analysis.marketMeaning),
+    affects: analysis.affects.map((item) => stripOffendingWords(item)).filter((item) => item.length > 0),
+  };
 }
 
 const AFFECTS_LABEL = /^(?:🎯\s*)?על מה זה משפיע:\s*/;

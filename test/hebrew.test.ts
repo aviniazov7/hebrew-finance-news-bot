@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { FALLBACK_AFFECTS } from "../src/affects.ts";
-import { containsInvestmentAdvice, isPrimarilyHebrew, resolveAffects, sanitizeAnalysis } from "../src/hebrew.ts";
+import {
+  containsArabicScript,
+  containsInvestmentAdvice,
+  isPrimarilyHebrew,
+  resolveAffects,
+  sanitizeAnalysis,
+  stripArabicFromAnalysis,
+  stripOffendingWords,
+} from "../src/hebrew.ts";
 import type { Analysis } from "../src/types.ts";
 
 function analysis(overrides: Partial<Analysis> = {}): Analysis {
@@ -66,6 +74,39 @@ describe("Hebrew check", () => {
       "שער הדולר-שקל",
       "קריפטו",
     ]);
+  });
+
+  it("rejects Arabic script blocks and allows Hebrew, Latin, digits, and nearby scripts", () => {
+    const hebrew = "הפד הוריד את הריבית ברבע נקודת אחוז";
+    expect(containsArabicScript(hebrew)).toBe(false);
+    expect(containsArabicScript(`${hebrew} AAPL 1.5`)).toBe(false);
+    expect(containsArabicScript("ܐܠܦ")).toBe(false);
+    expect(containsArabicScript("\u089F")).toBe(false);
+    for (const code of [0x0600, 0x0627, 0x06ff, 0x0750, 0x077f, 0x08a0, 0x08ff, 0xfb50, 0xfdff, 0xfe70, 0xfeff]) {
+      expect(containsArabicScript(`${hebrew}${String.fromCodePoint(code)}`)).toBe(true);
+    }
+  });
+
+  it("strips Arabic words and leftover Arabic characters, and keeps tickers and numbers", () => {
+    expect(stripOffendingWords("הבנק المركزي הוריד את הריבית")).toBe("הבנק הוריד את הריבית");
+    expect(stripOffendingWords("מניות أبل (AAPL) עלו ב־2%")).toBe("מניות (AAPL) עלו ב־2%");
+    expect(stripOffendingWords("שלום، עולם")).toBe("שלום עולם");
+    expect(stripOffendingWords("\uFEFFהפד הוריד את הריבית")).toBe("הפד הוריד את הריבית");
+    expect(stripOffendingWords("מניית AAPL עלתה ב־3%")).toBe("מניית AAPL עלתה ב־3%");
+    expect(containsArabicScript(stripOffendingWords("הודעה \uFB50 על השוק"))).toBe(false);
+  });
+
+  it("keeps a Hebrew draft that mixes in an Arabic word so the caller can retry before stripping", () => {
+    const mixed = analysis({
+      headline: "הבנק المركزي הוריד את הריבית ברבע נקודה",
+      affects: ["משכנתאות", "البنك", "הלוואות"],
+    });
+    expect(containsArabicScript(mixed.headline)).toBe(true);
+    expect(sanitizeAnalysis(mixed)?.headline).toContain("المركزي");
+    const stripped = stripArabicFromAnalysis(mixed);
+    expect(stripped.headline).toBe("הבנק הוריד את הריבית ברבע נקודה");
+    expect(stripped.affects).toEqual(["משכנתאות", "הלוואות"]);
+    expect(containsArabicScript(`${stripped.headline}\n${stripped.affects.join(" ")}`)).toBe(false);
   });
 
   it("leaves a missing affects list empty so the category fallback can fill it", () => {

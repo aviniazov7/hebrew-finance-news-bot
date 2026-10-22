@@ -35,7 +35,7 @@ export async function runPipeline(deps: {
   ai?: WorkersAiBinding;
   sleep?: (ms: number) => Promise<void>;
 }): Promise<RunReport> {
-  const fetchImpl = deps.fetchImpl ?? fetch;
+  const fetchImpl = deps.fetchImpl ?? fetch.bind(globalThis);
   const now = (deps.now ?? Date.now)();
   const analyze = deps.analyze ?? analyzeItem;
   const report = emptyReport();
